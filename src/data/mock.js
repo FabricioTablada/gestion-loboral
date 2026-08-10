@@ -13,9 +13,9 @@ export const HOY = { anio: 2026, mesIndice: 7, dia: 9 }; // 9 de agosto de 2026
 
 /** Usuario de la sesión (mock: aún no hay autenticación). */
 export const usuario = {
-  nombre: 'Marco Solís',
+  nombre: 'Flor Damaris Espinoza',
   rol: 'Administrador',
-  iniciales: 'MS',
+  iniciales: 'FE',
 };
 
 /**

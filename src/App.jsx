@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { color, status as statusTokens } from './theme/tokens.js';
 import { screens, defaultScreen } from './navigation.js';
-import { empleadosBase, configuracionBase, periodosBase, notificacionesBase, HOY } from './data/mock.js';
+import { empleadosBase, configuracionBase, periodosBase, notificacionesBase, usuario, HOY } from './data/mock.js';
 import {
   buildEmpleados,
   buildTotales,
@@ -23,6 +23,7 @@ import {
 import Sidebar, { SidebarContent } from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
 import { Drawer } from './components/ui/Drawer.jsx';
+import { IconMenu } from './components/ui/Icons.jsx';
 import { ToastProvider, useToast } from './components/ui/Toast.jsx';
 
 import Panel from './screens/Panel.jsx';
@@ -160,6 +161,9 @@ function AppShell() {
       eventos: buildEventos(esMesDeHoy),
       mesLabel: nombreMes(calMes.anio, calMes.mesIndice),
       barras: buildBarras(reportesRango),
+      // Serie fija de 12 meses para el gráfico "El pulso" del Home — independiente
+      // del selector 3/6/12 de Reportes, para no acoplar ambas pantallas.
+      barrasHome: buildBarras(12),
       distribucion: buildDistribucion(totales),
       costoPorEmpleado: buildCostoPorEmpleado(empsActivos),
       historial: buildHistorial(periodos, totales, empsActivos.length),
@@ -283,7 +287,18 @@ function AppShell() {
 
   const vistas = {
     panel: (
-      <Panel emps={data.empsActivos} totales={data.totales} atender={data.atender} barras={data.barras} onNavigate={navigate} />
+      <Panel
+        emps={data.empsActivos}
+        totales={data.totales}
+        atender={data.atender}
+        distribucion={data.distribucion}
+        barras={data.barrasHome}
+        periodoActivo={data.periodoActivo}
+        usuario={usuario}
+        empresaNombre={config.empresa.nombre}
+        poliza={config.poliza}
+        onNavigate={navigate}
+      />
     ),
     empleados: (
       <Empleados
@@ -300,13 +315,29 @@ function AppShell() {
       <Planilla
         vista={data.planillaVista}
         periodoTipo={config.periodoTipo}
+        periodos={periodos}
+        periodoActivoId={data.periodoActivo?.id}
+        atender={data.atender}
+        barras={data.barrasHome}
+        onSeleccionarPeriodo={verPeriodo}
         onAjustar={guardarAjuste}
+        onMarcarPagado={marcarPagado}
         onCerrarPeriodo={cerrarPeriodo}
         onVolverActivo={() => setPeriodoVerId(null)}
+        onNavigate={navigate}
       />
     ),
     pagos: (
-      <Pagos emps={data.empsActivos} totales={data.totales} onMarcarPagado={marcarPagado} onMarcarPagadoLote={marcarPagadoLote} />
+      <Pagos
+        emps={data.empsActivos}
+        totales={data.totales}
+        atender={data.atender}
+        periodoActivo={data.periodoActivo}
+        periodos={periodos}
+        onMarcarPagado={marcarPagado}
+        onMarcarPagadoLote={marcarPagadoLote}
+        onNavigate={navigate}
+      />
     ),
     ccss: (
       <Ccss
@@ -354,12 +385,22 @@ function AppShell() {
     configuracion: <Configuracion config={config} onGuardar={actualizarConfig} />,
   };
 
+  // El Home (Panel) y Planilla son composiciones editoriales de pantalla
+  // completa, sin el sidebar ni el header compartidos — cada una trae su
+  // propio masthead. El resto de los módulos conserva exactamente el mismo
+  // shell de siempre.
+  const esEditorial = screen === 'panel' || screen === 'planilla' || screen === 'pagos';
+
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden' }}>
-      <Sidebar current={screen} onNavigate={navigate} empresaNombre={config.empresa.nombre} modulo={config.modulo} />
+      {!esEditorial && (
+        <Sidebar current={screen} onNavigate={navigate} empresaNombre={config.empresa.nombre} modulo={config.modulo} />
+      )}
 
       {/* Bajo 900px el sidebar fijo desaparece (global.css); este Drawer
-          reutiliza el mismo contenido de navegación (Fase 1 · B.4 / F.1). */}
+          reutiliza el mismo contenido de navegación (Fase 1 · B.4 / F.1).
+          Se mantiene disponible también en las pantallas editoriales para no
+          perder la navegación móvil. */}
       <Drawer open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} side="left" width={280} background={color.ink}>
         <SidebarContent
           current={screen}
@@ -375,24 +416,41 @@ function AppShell() {
           minWidth: 0,
           display: 'flex',
           flexDirection: 'column',
-          background: color.canvas,
+          background: esEditorial ? 'oklch(96% 0.015 60)' : color.canvas,
         }}
       >
-        <TopBar
-          title={meta.title}
-          subtitle={meta.sub}
-          onMenuClick={() => setMobileNavOpen(true)}
-          periodos={periodos}
-          periodoMostrado={data.periodoMostrado}
-          periodoActivoId={data.periodoActivo?.id}
-          onSeleccionarPeriodo={verPeriodo}
-          notificaciones={notificaciones}
-          onNotifClick={irANotificacion}
-        />
+        {!esEditorial && (
+          <TopBar
+            title={meta.title}
+            subtitle={meta.sub}
+            onMenuClick={() => setMobileNavOpen(true)}
+            periodos={periodos}
+            periodoMostrado={data.periodoMostrado}
+            periodoActivoId={data.periodoActivo?.id}
+            onSeleccionarPeriodo={verPeriodo}
+            notificaciones={notificaciones}
+            onNotifClick={irANotificacion}
+          />
+        )}
 
-        <div id="app-content" className="app-content" style={{ flex: 1, overflowY: 'auto', padding: '28px 32px 40px' }}>
+        <div
+          id="app-content"
+          className="app-content"
+          style={{ flex: 1, overflowY: 'auto', padding: esEditorial ? 0 : '28px 32px 40px' }}
+        >
           {/* `key` reinicia la animación de entrada en cada cambio de pantalla. */}
           <div key={screen} style={{ display: 'contents' }}>
+            {esEditorial && (
+              <button
+                type="button"
+                className="menu-toggle btn btn--icon btn--icon-size"
+                onClick={() => setMobileNavOpen(true)}
+                aria-label="Abrir menú de navegación"
+                style={{ position: 'fixed', top: 16, left: 16, zIndex: 30 }}
+              >
+                <IconMenu size={18} stroke="oklch(40% 0.015 95)" />
+              </button>
+            )}
             {vistas[screen]}
           </div>
         </div>

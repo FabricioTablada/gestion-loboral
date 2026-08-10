@@ -681,3 +681,240 @@ button {
     font-size: 1.3rem !important;
   }
 }
+
+/* =========================================================
+   Home editorial — vocabulario de motion ambiental, exclusivo
+   de Panel.jsx. Prefijo `ed-` para no colisionar con nada del
+   resto de la app; el bloque de prefers-reduced-motion de más
+   arriba ya los alcanza (regla `*, *::before, *::after`).
+   ========================================================= */
+
+@keyframes ed-sun-breathe {
+  0%, 100% { transform: translateY(0) scale(1); filter: drop-shadow(0 0 14px oklch(88% 0.13 65 / 0.35)); }
+  50% { transform: translateY(-2px) scale(1.02); filter: drop-shadow(0 0 20px oklch(88% 0.14 65 / 0.5)); }
+}
+@keyframes ed-sun-halo {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.18); }
+}
+@keyframes ed-wave-drift {
+  0%, 100% { transform: translate(-20px, 0); }
+  50% { transform: translate(22px, -6px); }
+}
+@keyframes ed-wave-drift-2 {
+  0%, 100% { transform: translate(22px, 0); }
+  50% { transform: translate(-20px, 6px); }
+}
+@keyframes ed-aurora {
+  0%, 100% { transform: translate(-6%, -4%) scale(1) rotate(0deg); opacity: 0.65; }
+  50% { transform: translate(7%, 5%) scale(1.22) rotate(7deg); opacity: 0.95; }
+}
+@keyframes ed-aurora-2 {
+  0%, 100% { transform: translate(6%, 4%) scale(1) rotate(0deg); opacity: 0.6; }
+  50% { transform: translate(-7%, -5%) scale(1.18) rotate(-6deg); opacity: 0.9; }
+}
+@keyframes ed-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes ed-count-in {
+  from { opacity: 0; transform: translateY(14px); filter: blur(6px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+@keyframes ed-bar-grow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+@keyframes ed-stroke-draw {
+  from { stroke-dashoffset: 1400; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes ed-stroke-draw-sm {
+  from { stroke-dashoffset: 400; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes ed-stroke-draw-tiny {
+  from { stroke-dashoffset: 80; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes ed-fade-up {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ed-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ed-shine-sweep {
+  0%, 100% { transform: translateX(-100%); }
+  45%, 55% { transform: translateX(200%); }
+}
+@keyframes ed-flow-dash {
+  to { stroke-dashoffset: -60; }
+}
+@keyframes ed-flow-dash-slow {
+  to { stroke-dashoffset: -120; }
+}
+@keyframes ed-pulse-ring {
+  0% { transform: scale(0.85); opacity: 0.9; }
+  70% { transform: scale(2.3); opacity: 0; }
+  100% { transform: scale(2.3); opacity: 0; }
+}
+@keyframes ed-cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+@keyframes ed-bird-fly {
+  0% { transform: translate(-100px, 24px) scale(0.65); opacity: 0; }
+  15% { opacity: 0.95; }
+  85% { opacity: 0.95; }
+  100% { transform: translate(620px, -60px) scale(1.1); opacity: 0; }
+}
+@keyframes ed-bird-glide {
+  0% { transform: translate(0, 0) rotate(0deg); }
+  25% { transform: translate(18px, -12px) rotate(-2deg); }
+  50% { transform: translate(32px, 6px) rotate(1.5deg); }
+  75% { transform: translate(14px, 14px) rotate(-1deg); }
+  100% { transform: translate(0, 0) rotate(0deg); }
+}
+@keyframes ed-bird-flap {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.4); }
+}
+@keyframes ed-float-slow {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-2px) rotate(-0.2deg); }
+}
+@keyframes ed-bar-grow-x {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes ed-neto-pulse {
+  0% { transform: scale(1.12); color: oklch(70% 0.16 30); filter: drop-shadow(0 0 8px oklch(70% 0.16 30 / 0.5)); }
+  100% { transform: scale(1); filter: none; }
+}
+@keyframes ed-gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+@keyframes ed-bar-wave {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(1.05); }
+}
+@keyframes ed-pulse-glow {
+  0%, 100% { filter: drop-shadow(0 0 4px oklch(70% 0.16 30 / 0.3)); }
+  50% { filter: drop-shadow(0 0 16px oklch(70% 0.16 30 / 0.85)); }
+}
+@keyframes ed-dot-glow {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 oklch(70% 0.16 30 / 0.8); }
+  50% { transform: scale(1.25); box-shadow: 0 0 0 8px oklch(70% 0.16 30 / 0); }
+}
+@keyframes ed-gauge-breathe {
+  0%, 100% { filter: drop-shadow(0 0 4px oklch(85% 0.13 55 / 0.3)); }
+  50% { filter: drop-shadow(0 0 16px oklch(78% 0.16 25 / 0.8)); }
+}
+@keyframes ed-line-pulse {
+  0%, 100% { opacity: 0.8; filter: drop-shadow(0 0 2px oklch(70% 0.16 30 / 0.4)); }
+  50% { opacity: 1; filter: drop-shadow(0 0 10px oklch(70% 0.16 30 / 0.9)); }
+}
+@keyframes ed-dot-slide {
+  0% { offset-distance: 0%; }
+  100% { offset-distance: 100%; }
+}
+@keyframes ed-spin-slow {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.ed-serif {
+  font-family: 'Instrument Serif', serif;
+  font-weight: 400;
+}
+.ed-mono {
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+.ed-home a {
+  transition: color 140ms ease;
+}
+.ed-home button {
+  transition: background-color 140ms ease, opacity 140ms ease, transform 140ms ease;
+}
+.ed-home button:active {
+  transform: scale(0.97);
+}
+
+/* Subrayado que crece desde el centro en hover — nav del masthead (el item
+   activo ya trae el suyo fijo por props, este es solo para los inactivos). */
+.ed-nav-link::after {
+  content: '';
+  position: absolute;
+  bottom: -22px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: oklch(70% 0.16 30 / 0.55);
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (hover: hover) and (pointer: fine) {
+  .ed-nav-link:hover::after {
+    transform: scaleX(1);
+  }
+}
+
+@media (max-width: 1180px) {
+  .ed-home .ed-grid-2,
+  .ed-home .ed-grid-hero,
+  .ed-home .ed-grid-atender,
+  .ed-home .ed-grid-pulso,
+  .ed-home .ed-grid-estado,
+  .ed-home .ed-grid-taller,
+  .ed-home .ed-grid-pulso-ano,
+  .ed-home .ed-grid-pulso-caja,
+  .ed-home .ed-grid-mostrador,
+  .ed-home .ed-grid-libro,
+  .ed-home .ed-grid-canales {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .ed-home .ed-grid-3,
+  .ed-home .ed-grid-comprobante-head {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .ed-home .ed-grid-fila-esperando,
+  .ed-home .ed-grid-recibo {
+    grid-template-columns: auto 1fr !important;
+    row-gap: 10px;
+  }
+  .ed-home .ed-aside-mostrador {
+    position: static !important;
+  }
+  .ed-home .ed-grid-equipo-ribbon {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+  .ed-home .ed-masthead-nav {
+    display: none !important;
+  }
+  .ed-home .ed-rail {
+    display: none !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .ed-home .ed-grid-equipo-ribbon,
+  .ed-home .ed-grid-equipo-featured {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .ed-home .ed-hero-title {
+    font-size: 52px !important;
+  }
+  .ed-home .ed-dock {
+    flex-wrap: wrap;
+    border-radius: 20px !important;
+    justify-content: center;
+  }
+}
