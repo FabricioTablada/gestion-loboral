@@ -1,0 +1,683 @@
+/* =========================================================
+   Base — idéntica al prototipo de Claude Design
+   ========================================================= */
+
+:root {
+  /* Curvas fuertes: las nativas de CSS son demasiado suaves. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  /* Fase 2 · sistema de motion — superficies flotantes y paneles laterales. */
+  --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --dur-fast: 140ms;
+  --dur-base: 160ms;
+  --dur-moderate: 220ms;
+  --dur-slow: 300ms;
+
+  --accent: oklch(84% 0.19 80.46);
+  --accent-hover: oklch(86% 0.09 84);
+  --accent-on: oklch(16% 0.02 95);
+  --focus: oklch(62% 0.14 82);
+
+  /* Fase 2 · sistema de elevación (espeja theme/tokens.js → elevation). */
+  --shadow-1: 0 1px 2px oklch(7% 0.006 95 / 0.05), 0 1px 1px oklch(7% 0.006 95 / 0.04);
+  --shadow-2: 0 8px 22px -8px oklch(7% 0.006 95 / 0.16), 0 2px 6px -2px oklch(7% 0.006 95 / 0.08);
+  --shadow-3: 0 24px 56px -14px oklch(7% 0.006 95 / 0.26), 0 8px 16px -6px oklch(7% 0.006 95 / 0.12);
+  --scrim: oklch(7% 0.006 95 / 0.5);
+
+  /* Fase 2 · shape lock (espeja theme/tokens.js → radius). */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* Superficies base, duplicadas de theme/tokens.js → color para uso en CSS puro. */
+  --ink: oklch(7% 0.006 95);
+  --ink-text: oklch(91% 0 0);
+  --ink-muted: oklch(72% 0 0);
+  --surface: oklch(99% 0.006 95);
+  --border-soft: oklch(92% 0.012 95);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Albert Sans', system-ui, sans-serif;
+  /* Un punto más oscuro que --surface (99%): el canvas debe leerse hundido
+     respecto a las tarjetas que contiene (Fase 1 · I.1). */
+  background: oklch(95% 0.012 95);
+  color: oklch(25% 0.018 95);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: oklch(49% 0.08 188);
+  text-decoration: none;
+  transition: color 140ms ease;
+}
+
+a:hover {
+  color: oklch(41% 0.09 190);
+}
+
+button {
+  font-family: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: oklch(86% 0.01 95);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(80% 0.012 95);
+}
+
+/* Foco visible y consistente en toda la app, sin ensuciar el clic con ratón. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* =========================================================
+   Botones
+   ========================================================= */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    transform var(--dur-fast) var(--ease-out);
+}
+
+/* Feedback de pulsación: la interfaz confirma que escuchó al usuario. */
+.btn:active {
+  transform: scale(0.97);
+}
+
+/* Tamaños formales (Fase 1 · E) — antes cada call site pisaba el padding
+   con `style` inline; ahora es una variante declarada. */
+.btn--sm {
+  padding: 7px 13px;
+  font-size: 0.78rem;
+  gap: 6px;
+}
+
+.btn--md {
+  padding: 9px 15px;
+  font-size: 0.82rem;
+}
+
+.btn--lg {
+  padding: 11px 18px;
+  font-size: 0.86rem;
+}
+
+.btn--icon-size {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+/* Botones sin lógica todavía conectada (Fase 2 · alcance): se muestran
+   deshabilitados de forma honesta en vez de simular una acción que no ocurre. */
+.btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  /* Bloquea el hover/click del propio botón sin quitarle el foco de teclado
+     (pointer-events no afecta la tabulación); el Tooltip que lo envuelve
+     sigue detectando el hover porque escucha en su contenedor, no aquí. */
+  pointer-events: none;
+}
+
+.btn[aria-disabled='true']:active {
+  transform: none;
+}
+
+/* Botones genuinamente deshabilitados (Fase 4 · funcional) — a diferencia
+   de `[aria-disabled]` de arriba, esto es un estado real ("la cuota ya
+   está pagada"), no un placeholder de acción pendiente por construir. */
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:disabled:active {
+  transform: none;
+}
+
+.btn--accent {
+  background: var(--accent);
+  color: var(--accent-on);
+  border-color: transparent;
+}
+
+.btn--ghost {
+  background: oklch(98% 0.006 95);
+  color: oklch(35% 0.02 95);
+  border-color: oklch(88% 0.012 95);
+}
+
+.btn--icon {
+  background: oklch(99% 0.006 95);
+  border-color: oklch(89% 0.012 95);
+}
+
+.btn--soft {
+  background: oklch(97% 0.02 84);
+  color: oklch(40% 0.09 68);
+  border-color: oklch(88% 0.03 84);
+}
+
+.btn--danger {
+  background: oklch(58% 0.15 35);
+  color: oklch(98% 0.01 35);
+  border-color: transparent;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn--accent:hover {
+    background: var(--accent-hover);
+  }
+  .btn--ghost:hover {
+    background: oklch(96% 0.01 95);
+  }
+  .btn--icon:hover {
+    background: oklch(96% 0.01 95);
+  }
+  .btn--soft:hover {
+    background: oklch(94% 0.04 84);
+  }
+  .btn--danger:hover {
+    background: oklch(52% 0.16 35);
+  }
+}
+
+/* =========================================================
+   Navegación lateral
+   ========================================================= */
+
+.nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 11px;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.86rem;
+  font-weight: 500;
+  position: relative;
+  background: transparent;
+  color: oklch(72% 0 0);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.nav-item[data-active='true'] {
+  background: oklch(19% 0.008 95);
+  color: oklch(86% 0.16 82);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .nav-item:not([data-active='true']):hover {
+    background: oklch(13% 0.008 95);
+    color: oklch(85% 0 0);
+  }
+}
+
+.nav-item:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Barra indicadora del item activo */
+.nav-item__bar {
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.nav-item[data-active='true'] .nav-item__bar {
+  opacity: 1;
+}
+
+/* =========================================================
+   Filas de tabla / listas
+   ========================================================= */
+
+.row {
+  transition: background-color 130ms ease;
+}
+
+.row--clickable {
+  cursor: pointer;
+}
+
+.row__bar {
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.row[data-selected='true'] {
+  background: oklch(97.5% 0.02 84);
+}
+
+.row[data-selected='true'] .row__bar {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .row--clickable:not([data-selected='true']):hover {
+    background: oklch(97.5% 0.01 95);
+  }
+  .row--hoverable:hover {
+    background: oklch(97.5% 0.008 95);
+  }
+  .list-row:hover {
+    background: oklch(97% 0.008 95);
+  }
+}
+
+.list-row {
+  transition: background-color 130ms ease;
+}
+
+/* =========================================================
+   Entrada de pantalla
+   ========================================================= */
+
+.screen {
+  animation: screen-in 220ms var(--ease-out) both;
+}
+
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Las barras de los gráficos crecen desde su base al entrar. */
+.bar-grow {
+  transition:
+    height 420ms var(--ease-out),
+    width 420ms var(--ease-out);
+}
+
+/* =========================================================
+   Elevación interactiva (Fase 1 · I.1 / I.3)
+   Solo se activa donde un componente la pida explícitamente —
+   no se aplica de forma global a evitar ruido visual.
+   ========================================================= */
+
+.elevate-hover,
+.elevate-hover-lg {
+  transition:
+    box-shadow var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+
+/* `!important` es deliberado: las superficies que usan esta clase fijan su
+   sombra en reposo vía `style` inline (Card → boxShadow: elevation[n]), y
+   un estilo inline siempre gana sobre una regla de clase — sin esto el
+   hover quedaba declarado pero nunca se veía (Fase 3 · iteración 2). */
+@media (hover: hover) and (pointer: fine) {
+  .elevate-hover:hover {
+    box-shadow: var(--shadow-2) !important;
+    transform: translateY(-2px);
+  }
+  .elevate-hover-lg:hover {
+    box-shadow: var(--shadow-3) !important;
+    transform: translateY(-4px);
+  }
+}
+
+/* Entrada escalonada para listas que se ven pocas veces por sesión
+   (Fase 1 · C — nunca en tablas de alta frecuencia). `--i` es el índice
+   del elemento, fijado inline por el componente que lo usa. */
+.stagger-in {
+  animation: stagger-in-kf var(--dur-moderate) var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 34ms);
+}
+
+@keyframes stagger-in-kf {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Único candidato aprobado de animación ambiental (Fase 1 · I.6): barrido
+   diagonal casi imperceptible, reservado al bloque de costo total del
+   Panel. Δopacidad muy baja, ciclo lento, sin partículas. */
+.ink-sheen {
+  position: relative;
+  overflow: hidden;
+}
+
+.ink-sheen::after {
+  content: '';
+  position: absolute;
+  inset: -40% -10%;
+  background: linear-gradient(
+    115deg,
+    transparent 35%,
+    oklch(100% 0 0 / 0.05) 48%,
+    oklch(100% 0 0 / 0.08) 50%,
+    oklch(100% 0 0 / 0.05) 52%,
+    transparent 65%
+  );
+  animation: ink-sheen-move 14s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes ink-sheen-move {
+  0%,
+  100% {
+    transform: translateX(-8%);
+  }
+  50% {
+    transform: translateX(8%);
+  }
+}
+
+/* =========================================================
+   Overlays — Modal / Drawer / scrim
+   Modal: escala + fade, siempre centrado.
+   Drawer: entra por el borde correspondiente (translateX/Y).
+   ========================================================= */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  z-index: 60;
+  opacity: 0;
+  transition: opacity var(--dur-moderate) var(--ease-out);
+}
+
+.scrim--visible {
+  opacity: 1;
+}
+
+.modal-surface {
+  opacity: 0;
+  transform: scale(0.97);
+  transition:
+    opacity var(--dur-moderate) var(--ease-emphasized),
+    transform var(--dur-moderate) var(--ease-emphasized);
+}
+
+.modal-surface--visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.drawer-surface {
+  transition: transform var(--dur-slow) var(--ease-drawer);
+}
+
+.drawer-surface[data-side='right'] {
+  transform: translateX(100%);
+}
+
+.drawer-surface[data-side='left'] {
+  transform: translateX(-100%);
+}
+
+.drawer-surface--visible {
+  transform: translateX(0);
+}
+
+/* =========================================================
+   Toast
+   Entra y sale por el mismo borde (inferior), fade acompaña
+   siempre a la traslación.
+   ========================================================= */
+
+.toast {
+  opacity: 0;
+  transform: translateY(12px);
+  transition:
+    opacity var(--dur-slow) var(--ease-out),
+    transform var(--dur-slow) var(--ease-out);
+}
+
+.toast--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* =========================================================
+   Tooltip
+   ========================================================= */
+
+.tooltip {
+  position: absolute;
+  z-index: 70;
+  pointer-events: none;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+  color: var(--ink-text);
+  font-size: 0.72rem;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: var(--shadow-2);
+  opacity: 0;
+  transition:
+    opacity 125ms var(--ease-out),
+    transform 125ms var(--ease-out);
+}
+
+.tooltip[data-side='top'] {
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translate(-50%, 2px);
+}
+
+.tooltip[data-side='bottom'] {
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translate(-50%, -2px);
+}
+
+.tooltip--visible[data-side='top'] {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.tooltip--visible[data-side='bottom'] {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* =========================================================
+   Skeleton — sustituye al spinner genérico para contenido
+   que aún está cargando; misma forma que el contenido final.
+   ========================================================= */
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, oklch(100% 0 0 / 0.5), transparent);
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* =========================================================
+   Tabla con desbordamiento horizontal controlado
+   El body de la página nunca debe desplazarse en horizontal;
+   solo el contenido ancho, dentro de su propio contenedor.
+   ========================================================= */
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* =========================================================
+   Navegación móvil — botón hamburguesa
+   Oculto en escritorio; visible solo bajo el breakpoint de 900px
+   donde `.app-sidebar` desaparece (ver más abajo).
+   ========================================================= */
+
+.menu-toggle {
+  display: none;
+}
+
+/* =========================================================
+   Accesibilidad
+   ========================================================= */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Menos movimiento, no cero: se conservan color y opacidad. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .btn:active {
+    transform: none;
+  }
+
+  .stagger-in {
+    animation-delay: 0ms !important;
+  }
+
+  .ink-sheen::after {
+    display: none;
+  }
+}
+
+/* =========================================================
+   Adaptación a pantallas estrechas
+   El diseño es una app de escritorio (1440×920). Estas reglas sólo
+   evitan que la retícula se rompa; no alteran la identidad visual.
+   ========================================================= */
+
+@media (max-width: 1180px) {
+  .grid-2,
+  .grid-2-wide,
+  .grid-3 {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+/* Escalón intermedio: las grillas de 3 columnas ceden a 2 antes de
+   colapsar del todo a 1 en 1180px. */
+@media (max-width: 1024px) {
+  .grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 900px) {
+  /* El sidebar fijo desaparece; su contenido pasa a vivir en el Drawer
+     móvil (ver Sidebar.jsx / App.jsx), abierto por el botón hamburguesa. */
+  .app-sidebar {
+    display: none;
+  }
+  .menu-toggle {
+    display: inline-flex;
+  }
+  .app-header {
+    padding: 0 18px !important;
+    gap: 12px !important;
+  }
+  .app-header .period-selector__label {
+    display: none;
+  }
+  .app-content {
+    padding: 20px 18px 32px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-header .topbar-title {
+    font-size: 1.3rem !important;
+  }
+}
