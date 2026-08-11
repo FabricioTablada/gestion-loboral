@@ -24,6 +24,7 @@ import {
   buildHistorialEmpleado,
   nextPeriodo,
 } from './lib/payroll.js';
+import { exportarTodoXlsx, leerBackupXlsx } from './lib/excelBackup.js';
 
 import { SidebarContent } from './components/Sidebar.jsx';
 import { Drawer } from './components/ui/Drawer.jsx';
@@ -330,6 +331,36 @@ function AppShell() {
   function navigateFromMobileNav(key) {
     navigate(key);
     setMobileNavOpen(false);
+  }
+
+  /** Respaldo completo (Fase de continuidad): mientras no haya backend, este
+   *  es el mecanismo real para no perder la información si se borra el
+   *  caché del navegador o se formatea la computadora — ver
+   *  `src/lib/excelBackup.js`. */
+  async function handleExportarTodo() {
+    try {
+      await exportarTodoXlsx(
+        { empleados, empId, ajustes, periodos, config, ccssEstadoPorMes, insEstadoPorMes, ccssHistorial, insHistorial, notifLeidas },
+        config.empresa.nombre,
+        HOY,
+      );
+      toast.push('Respaldo descargado', { tone: 'success' });
+    } catch {
+      toast.push('No se pudo generar el respaldo', { tone: 'danger' });
+    }
+  }
+
+  /** Sobrescribe TODO lo que hay guardado ahora mismo — Configuracion.jsx ya
+   *  pide confirmación antes de llamar esto. */
+  async function handleImportarTodo(file) {
+    try {
+      const datos = await leerBackupXlsx(file);
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(datos));
+      toast.push('Respaldo restaurado — recargando…', { tone: 'success' });
+      window.location.reload();
+    } catch (err) {
+      toast.push(err?.message || 'No se pudo leer el archivo de respaldo', { tone: 'danger' });
+    }
   }
 
   // Al cambiar de pantalla el contenido vuelve arriba. `useLayoutEffect` (no
@@ -942,6 +973,8 @@ function AppShell() {
         notificaciones={notificaciones}
         onNotifClick={irANotificacion}
         onNavigate={navigate}
+        onExportarTodo={handleExportarTodo}
+        onImportarTodo={handleImportarTodo}
       />
     ),
   };

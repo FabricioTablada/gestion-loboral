@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 
 import { HOY } from '../data/mock.js';
 import { NotificacionesPanel } from '../components/ui/NotificacionesPanel.jsx';
+import { ConfirmDialog } from '../components/ui/Modal.jsx';
 import ScrollRail, { Logo } from '../components/ScrollRail.jsx';
 
 /**
@@ -315,13 +316,14 @@ const CONFIG_SECTIONS = [
   { key: 'periodo', label: 'Período' },
   { key: 'pagos', label: 'Pagos' },
   { key: 'ins', label: 'INS' },
+  { key: 'respaldo', label: 'Respaldo' },
 ];
 
 /* ---------------------------------------------------------
    Composición
    --------------------------------------------------------- */
 
-export default function Configuracion({ config, onGuardar, notificaciones, onNotifClick, onNavigate }) {
+export default function Configuracion({ config, onGuardar, notificaciones, onNotifClick, onNavigate, onExportarTodo, onImportarTodo }) {
   const [f, setF] = useState(() => ({
     nombre: config.empresa.nombre,
     actividad: config.empresa.actividad,
@@ -345,10 +347,35 @@ export default function Configuracion({ config, onGuardar, notificaciones, onNot
   const [errores, setErrores] = useState({});
   const [guardado, setGuardado] = useState(false);
 
+  const [exportando, setExportando] = useState(false);
+  const [archivoPendiente, setArchivoPendiente] = useState(null);
+  const importRef = useRef(null);
+
   const sectionRefs = useRef({});
   const setSectionRef = (key) => (el) => {
     sectionRefs.current[key] = el;
   };
+
+  async function handleExportarClick() {
+    setExportando(true);
+    try {
+      await onExportarTodo();
+    } finally {
+      setExportando(false);
+    }
+  }
+
+  function handleArchivoElegido(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite elegir el mismo archivo dos veces seguidas
+    if (file) setArchivoPendiente(file);
+  }
+
+  function confirmarImportacion() {
+    const file = archivoPendiente;
+    setArchivoPendiente(null);
+    if (file) onImportarTodo(file);
+  }
 
   function set(campo, valor) {
     setF((d) => ({ ...d, [campo]: valor }));
@@ -661,6 +688,75 @@ export default function Configuracion({ config, onGuardar, notificaciones, onNot
             </Campo>
           </Bloque>
         </div>
+
+        <div id="cfg-sec-respaldo" ref={setSectionRef('respaldo')}>
+          <Bloque
+            n="07"
+            eyebrow="respaldo"
+            titulo="Copia de"
+            destacado="seguridad"
+            nota="Mientras el sistema no tenga una base de datos en la nube, toda la información vive únicamente en este navegador. Exportá un respaldo de vez en cuando (por ejemplo, al cerrar cada quincena) y guardalo fuera de esta computadora — Drive, USB, correo — para poder recuperarlo todo si se borra el caché o se formatea la máquina."
+          >
+            <div style={{ padding: '22px 24px', background: pal.paper, border: `1px solid ${pal.line}`, borderRadius: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ fontSize: 20, color: pal.ink, ...serif }}>Exportar todo</div>
+              <p style={{ margin: 0, fontSize: 13, color: pal.muted, lineHeight: 1.55 }}>
+                Descarga un Excel con empleados, historial de pagos, CCSS, INS y configuración — listo para guardar como respaldo.
+              </p>
+              <button
+                type="button"
+                onClick={handleExportarClick}
+                disabled={exportando}
+                style={{
+                  padding: '12px 18px',
+                  background: pal.ink,
+                  color: pal.cream,
+                  border: 'none',
+                  borderRadius: 12,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: exportando ? 'default' : 'pointer',
+                  opacity: exportando ? 0.7 : 1,
+                }}
+              >
+                {exportando ? 'Generando…' : 'Exportar todo a Excel ↓'}
+              </button>
+            </div>
+
+            <div style={{ padding: '22px 24px', background: pal.paper, border: `1px solid ${pal.line}`, borderRadius: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ fontSize: 20, color: pal.ink, ...serif }}>Importar / restaurar</div>
+              <p style={{ margin: 0, fontSize: 13, color: pal.muted, lineHeight: 1.55 }}>
+                Subí un archivo de respaldo generado por esta misma app. <strong style={{ color: pal.red }}>Reemplaza todo</strong> lo que hay guardado ahora en este navegador.
+              </p>
+              <input ref={importRef} type="file" accept=".xlsx" onChange={handleArchivoElegido} style={{ display: 'none' }} />
+              <button
+                type="button"
+                onClick={() => importRef.current?.click()}
+                style={{
+                  padding: '12px 18px',
+                  background: 'transparent',
+                  color: pal.ink,
+                  border: `1px solid ${pal.line}`,
+                  borderRadius: 12,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Importar desde Excel ↑
+              </button>
+            </div>
+          </Bloque>
+        </div>
+
+        <ConfirmDialog
+          open={!!archivoPendiente}
+          onClose={() => setArchivoPendiente(null)}
+          onConfirm={confirmarImportacion}
+          title="Restaurar desde este archivo"
+          description={`Se va a reemplazar TODA la información guardada en este navegador (empleados, períodos, historial, configuración) por la del archivo "${archivoPendiente?.name || ''}". Esta acción no se puede deshacer.`}
+          confirmLabel="Restaurar y reemplazar"
+          danger
+        />
 
         <footer
           style={{
