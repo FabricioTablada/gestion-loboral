@@ -8,8 +8,6 @@ import {
   IconEmpleados,
   IconPlanilla,
   IconPagos,
-  IconCcss,
-  IconIns,
   IconCalendario,
   IconReportes,
   IconHistorial,
@@ -24,15 +22,18 @@ export const screens = {
     sub: 'Información personal y laboral del equipo',
     icon: IconEmpleados,
   },
-  planilla: { label: 'Planilla', title: 'Planilla', sub: 'Quincena 01–15 de agosto 2026', icon: IconPlanilla },
+  // `sub` es un texto genérico de respaldo (hoy Planilla usa su propio
+  // masthead editorial con el período real, así que este no se muestra en
+  // pantalla) — antes tenía una fecha fija ("Quincena 01–15 de agosto
+  // 2026") que quedaría desactualizada apenas avanzara el período real.
+  planilla: { label: 'Planilla', title: 'Planilla', sub: 'Quincena o mes activo de la planilla', icon: IconPlanilla },
   pagos: { label: 'Pagos', title: 'Pagos', sub: 'Control de salarios pendientes y realizados', icon: IconPagos },
-  ccss: { label: 'CCSS', title: 'CCSS', sub: 'Seguro social — cuotas y comprobantes', icon: IconCcss },
-  ins: {
-    label: 'INS / Riesgos',
-    title: 'INS / Riesgos del Trabajo',
-    sub: 'Póliza, reportes y vencimientos',
-    icon: IconIns,
-  },
+  // Las rutas `ccss` e `ins` se eliminaron: eran pantallas standalone que
+  // mostraban exactamente los mismos datos que los dossiers de CCSS/INS
+  // dentro de Obligaciones (dos paneles para lo mismo). Todo el acceso pasa
+  // ahora por Obligaciones, que ya era a donde apuntaban el Home y el propio
+  // "Atender X". `App.jsx` traduce cualquier destino `ccss`/`ins` —incluidos
+  // los enlaces viejos tipo `#ccss`— al dossier correspondiente.
   calendario: {
     label: 'Calendario',
     title: 'Calendario de obligaciones',
@@ -62,7 +63,7 @@ export const screens = {
 /** Secciones del menú lateral, en orden. */
 export const navGroups = [
   { label: 'PRINCIPAL', items: ['panel', 'empleados', 'planilla', 'pagos'] },
-  { label: 'OBLIGACIONES', items: ['ccss', 'ins', 'calendario'] },
+  { label: 'OBLIGACIONES', items: ['calendario'] },
   { label: 'ANÁLISIS', items: ['reportes', 'historial'] },
   { label: 'SISTEMA', items: ['configuracion'] },
 ];

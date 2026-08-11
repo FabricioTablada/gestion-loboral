@@ -718,8 +718,8 @@ button {
   100% { background-position: 200% 0; }
 }
 @keyframes ed-count-in {
-  from { opacity: 0; transform: translateY(14px); filter: blur(6px); }
-  to { opacity: 1; transform: none; filter: none; }
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
 }
 @keyframes ed-bar-grow {
   from { transform: scaleY(0); }
@@ -810,6 +810,10 @@ button {
   0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 oklch(70% 0.16 30 / 0.8); }
   50% { transform: scale(1.25); box-shadow: 0 0 0 8px oklch(70% 0.16 30 / 0); }
 }
+@keyframes ed-gold-glow {
+  0%, 100% { box-shadow: 0 0 0 0 oklch(85% 0.14 75 / 0.55); }
+  50% { box-shadow: 0 0 0 8px oklch(85% 0.14 75 / 0); }
+}
 @keyframes ed-gauge-breathe {
   0%, 100% { filter: drop-shadow(0 0 4px oklch(85% 0.13 55 / 0.3)); }
   50% { filter: drop-shadow(0 0 16px oklch(78% 0.16 25 / 0.8)); }
@@ -827,6 +831,33 @@ button {
   100% { transform: rotate(360deg); }
 }
 
+/* Entrada Y salida compartidas para menús flotantes que aparecen desde su
+   disparador (campana de notificaciones, buscador, selector de período):
+   antes aparecían Y desaparecían de golpe con `{open && ...}`, sin ninguna
+   conexión visual con el elemento que los abrió. El componente mantiene el
+   nodo montado un instante más al cerrar (mismo patrón que `Modal.jsx`) y
+   alterna `--visible` para que la transición corra en ambos sentidos. */
+.ed-pop-in {
+  opacity: 0;
+  transform: scale(0.96) translateY(-4px);
+  transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out);
+  pointer-events: none;
+}
+.ed-pop-in--visible {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ed-pop-in {
+    transform: none;
+    transition: opacity 120ms ease;
+  }
+  .ed-pop-in--visible {
+    transform: none;
+  }
+}
+
 .ed-serif {
   font-family: 'Instrument Serif', serif;
   font-weight: 400;
@@ -840,10 +871,15 @@ button {
 .ed-home a {
   transition: color 140ms ease;
 }
-.ed-home button {
+/* `.scrim` va incluido porque los modales se montan con `createPortal` en
+   <body> (ver Modal.jsx): sin esto, sus botones perderían el feedback de
+   pulsación que sí tienen los del resto de la pantalla. */
+.ed-home button,
+.scrim button {
   transition: background-color 140ms ease, opacity 140ms ease, transform 140ms ease;
 }
-.ed-home button:active {
+.ed-home button:active,
+.scrim button:active {
   transform: scale(0.97);
 }
 
@@ -867,6 +903,19 @@ button {
   }
 }
 
+/* Tarjetas del ranking de equipo (Home): antes el hover se aplicaba con JS
+   (`onMouseEnter`/`onMouseLeave` mutando `style` directo), sin gating de
+   puntero — un tap en touch disparaba `mouseenter` sin `mouseleave`
+   correspondiente y la tarjeta quedaba "levantada" hasta el próximo tap en
+   otro lado (revisión de motion). */
+@media (hover: hover) and (pointer: fine) {
+  .ed-team-card:hover {
+    transform: translateY(-6px);
+    box-shadow: 0 20px 40px -12px oklch(20% 0.02 30 / 0.18);
+    border-color: oklch(75% 0.12 30 / 0.5);
+  }
+}
+
 @media (max-width: 1180px) {
   .ed-home .ed-grid-2,
   .ed-home .ed-grid-hero,
@@ -878,12 +927,48 @@ button {
   .ed-home .ed-grid-pulso-caja,
   .ed-home .ed-grid-mostrador,
   .ed-home .ed-grid-libro,
-  .ed-home .ed-grid-canales {
+  .ed-home .ed-grid-canales,
+  .ed-home .ed-grid-4,
+  .ed-home .ed-grid-elenco,
+  .ed-home .ed-grid-expediente,
+  .ed-home .ed-grid-cartografia,
+  .ed-home .ed-grid-cuenta,
+  .ed-home .ed-grid-quincenas,
+  .ed-home .ed-grid-acciones,
+  .ed-home .ed-grid-archivo,
+  .ed-home .ed-grid-dossier-body,
+  .ed-home .ed-grid-dossier-head,
+  .ed-home .ed-grid-pista,
+  .ed-home .ed-grid-observatorio,
+  .ed-home .ed-grid-capitulo-body,
+  .ed-home .ed-grid-capitulo-metrica,
+  .ed-home .ed-grid-comparativas,
+  .ed-home .ed-grid-buscador,
+  .ed-home .ed-grid-tomo-body,
+  .ed-home .ed-grid-vs {
     grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .ed-home .ed-grid-tomo-head {
+    grid-template-columns: auto 1fr !important;
+  }
+  .ed-home .ed-grid-diff,
+  .ed-home .ed-grid-resultado {
+    grid-template-columns: auto 1fr auto !important;
+    row-gap: 6px;
+  }
+  .ed-home .ed-grid-atlas {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .ed-home .ed-grid-atlas [style*='grid-column: span 3'],
+  .ed-home .ed-grid-atlas [style*='grid-column: span 2'] {
+    grid-column: span 2 !important;
   }
   .ed-home .ed-grid-3,
   .ed-home .ed-grid-comprobante-head {
     grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .ed-home .ed-spine {
+    display: none !important;
   }
   .ed-home .ed-grid-fila-esperando,
   .ed-home .ed-grid-recibo {
@@ -899,7 +984,10 @@ button {
   .ed-home .ed-masthead-nav {
     display: none !important;
   }
-  .ed-home .ed-rail {
+  /* El rail se monta con `createPortal` en <body> (ver ScrollRail.jsx), así
+     que ya no cuelga de `.ed-home`: se selecciona por su propia clase para
+     que esta regla responsive siga aplicando. */
+  .ed-rail {
     display: none !important;
   }
 }
@@ -911,6 +999,13 @@ button {
   }
   .ed-home .ed-hero-title {
     font-size: 52px !important;
+  }
+  .ed-home .ed-equipo-featured-detail {
+    border-left: none !important;
+    padding-left: 0 !important;
+    border-top: 1px solid oklch(85% 0.015 55);
+    padding-top: 20px;
+    margin-top: 6px;
   }
   .ed-home .ed-dock {
     flex-wrap: wrap;

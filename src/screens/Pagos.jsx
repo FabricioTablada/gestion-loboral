@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { HOY } from '../data/mock.js';
-import { money } from '../lib/format.js';
-import { IconSearch, IconCampana, IconChevronRight } from '../components/ui/Icons.jsx';
+import { money, fechaISO } from '../lib/format.js';
+import { sugerirMetodoPago } from '../lib/payroll.js';
+import { descargarCsv, sufijoFecha } from '../lib/export.js';
+import { IconSearch, IconChevronRight } from '../components/ui/Icons.jsx';
 import { Modal } from '../components/ui/Modal.jsx';
+import { NotificacionesPanel } from '../components/ui/NotificacionesPanel.jsx';
 import { Field, Input, Select } from '../components/ui/Form.jsx';
 import { Button } from '../components/ui/Primitives.jsx';
 
@@ -14,9 +17,13 @@ import { Button } from '../components/ui/Primitives.jsx';
  *
  * Los datos y la lógica son los que ya existían (`emps`, `totales`,
  * `onMarcarPagado`, `onMarcarPagadoLote`): esto es solo una nueva
- * presentación sobre las mismas props. No hay estados nuevos de negocio —
- * "listo para pagar" es simplemente `pendiente + tieneAjuste`, y "canal"
- * es el campo real `banco` de cada empleado.
+ * presentación sobre las mismas props. "Listo para pagar" es simplemente
+ * `pago !== 'pagado'` — la misma regla que ya usa Planilla, sin exigir un
+ * ajuste puntual (antes esta pantalla sí lo exigía, dejándola inoperante en
+ * el caso normal de una planilla sin ajustes y contradiciendo a Planilla,
+ * que dejaba pagar a cualquiera; auditoría C2). "Canal" para quien ya cobró
+ * es el método real usado (`e.metodo`); para quien no, es su cuenta
+ * configurada (`e.banco`) como estimado — ver `canalRealDe` (auditoría F4).
  */
 const pal = {
   ink: 'oklch(20% 0.02 30)',
@@ -121,6 +128,19 @@ function canalDe(banco) {
   return (banco || '').split('·')[0].trim() || 'Sin canal';
 }
 
+/**
+ * Canal REAL de un empleado ya pagado: el método que realmente se usó al
+ * confirmar el pago (`e.metodo`), no la cuenta configurada de antemano en
+ * su ficha (`e.banco`) — antes se agrupaba siempre por `banco`, así que si
+ * alguien cobraba por Transferencia pero su ficha decía "Efectivo", el
+ * volumen quedaba contado en el canal equivocado (auditoría F4). Para quien
+ * todavía no cobró, `metodo` no existe aún — se usa `banco` como estimado.
+ */
+function canalRealDe(e) {
+  if (e.pago === 'pagado' && e.metodo && e.metodo !== '—') return e.metodo;
+  return canalDe(e.banco);
+}
+
 function canalIniciales(nombre) {
   return nombre.slice(0, 1).toUpperCase();
 }
@@ -135,15 +155,50 @@ const NAV_ITEMS = [
   { key: 'historial', label: 'Historial' },
 ];
 
-const METODOS = ['Transferencia', 'Efectivo', 'Cheque', 'SINPE Móvil'];
-
 /* ---------------------------------------------------------
    Modal de confirmación de pago — misma lógica que ya existía
    --------------------------------------------------------- */
 
-function PagoModal({ cantidad, onClose, onConfirmar }) {
-  const [metodo, setMetodo] = useState(METODOS[0]);
-  const [fecha, setFecha] = useState(() => new Date().toISOString().slice(0, 10));
+const HOY_ISO = fechaISO(HOY);
+
+/** Métodos reales de Configuración (ver `config.metodosPago`) — antes era una
+ * constante fija acá y otra idéntica dentro de Planilla.jsx. */
+function listaMetodos(metodos) {
+  return Array.isArray(metodos) && metodos.length > 0 ? metodos : ['Transferencia'];
+}
+
+function PagoModal({ cantidad, sugerido, metodos, onClose, onConfirmar }) {
+  const METODOS = listaMetodos(metodos);
+  const [metodo, setMetodo] = useState(sugerido || METODOS[0]);
+  // Misma fuente de "hoy" que el resto de la app (`HOY` de mock.js) — no el
+  // reloj real del sistema, para que la fecha de pago no dependa de por
+  // dónde se registró (ver `fechaISO`).
+  const [fecha, setFecha] = useState(HOY_ISO);
+  // Registro financiero manual (Fase 10): opcionales — no todo pago trae
+  // referencia y no todo canal cobra comisión. Aplican a cada persona del
+  // lote si se está marcando más de un pago a la vez con la misma transferencia.
+  const [referencia, setReferencia] = useState('');
+  const [comision, setComision] = useState('');
+
+  // Cada vez que se abre el modal (para una persona/lote distinto) se
+  // recalcula el método sugerido y se vuelve a la fecha de hoy — antes el
+  // método quedaba fijo en "Transferencia" sin importar el canal real del
+  // empleado (auditoría F6).
+  useEffect(() => {
+    if (cantidad) {
+      setMetodo(sugerido || METODOS[0]);
+      setFecha(HOY_ISO);
+      setReferencia('');
+      setComision('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cantidad, sugerido]);
+
+  // Nunca una fecha futura ni vacía — un pago no puede haber ocurrido
+  // "mañana" (auditoría F5).
+  const fechaInvalida = !fecha || fecha > HOY_ISO;
+  const comisionNum = comision.trim() === '' ? 0 : Number(comision);
+  const comisionInvalida = comision.trim() !== '' && (Number.isNaN(comisionNum) || comisionNum < 0);
 
   return (
     <Modal open={!!cantidad} onClose={onClose} title={cantidad === 1 ? 'Marcar como pagado' : `Marcar ${cantidad || 0} pagos`} width={380}>
@@ -155,8 +210,14 @@ function PagoModal({ cantidad, onClose, onConfirmar }) {
             ))}
           </Select>
         </Field>
-        <Field label="Fecha de pago" htmlFor="pg-fecha">
-          <Input id="pg-fecha" type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} />
+        <Field label="Fecha de pago" htmlFor="pg-fecha" error={fechaInvalida ? 'La fecha no puede ser futura ni estar vacía.' : undefined}>
+          <Input id="pg-fecha" type="date" value={fecha} max={HOY_ISO} onChange={(e) => setFecha(e.target.value)} />
+        </Field>
+        <Field label="Referencia bancaria" htmlFor="pg-ref" help="Opcional — el número de comprobante que dio el banco.">
+          <Input id="pg-ref" value={referencia} onChange={(e) => setReferencia(e.target.value)} placeholder="Ej. 000123456" />
+        </Field>
+        <Field label="Comisión bancaria (₡)" htmlFor="pg-comision" help="Opcional — solo si el banco cobró comisión por esta transferencia." error={comisionInvalida ? 'Ingresá un monto válido.' : undefined}>
+          <Input id="pg-comision" type="number" min="0" step="1" value={comision} onChange={(e) => setComision(e.target.value)} placeholder="0" />
         </Field>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
           <Button variant="ghost" size="sm" onClick={onClose}>
@@ -165,9 +226,11 @@ function PagoModal({ cantidad, onClose, onConfirmar }) {
           <Button
             variant="accent"
             size="sm"
+            disabled={fechaInvalida || comisionInvalida}
             onClick={() => {
+              if (fechaInvalida || comisionInvalida) return;
               const fechaFmt = new Date(fecha + 'T00:00:00').toLocaleDateString('es-CR', { day: '2-digit', month: 'short', year: 'numeric' });
-              onConfirmar({ metodo, fecha: fechaFmt });
+              onConfirmar({ metodo, fecha: fechaFmt, referencia: referencia.trim(), comision: comisionNum });
             }}
           >
             Confirmar
@@ -182,7 +245,7 @@ function PagoModal({ cantidad, onClose, onConfirmar }) {
    Masthead + barra de estado
    --------------------------------------------------------- */
 
-function Masthead({ periodoActivo, atender, onNavigate }) {
+function Masthead({ periodoActivo, atender, notificaciones, onNotifClick, onNavigate, busqueda, onBusquedaChange }) {
   return (
     <header
       style={{
@@ -242,26 +305,22 @@ function Masthead({ periodoActivo, atender, onNavigate }) {
       </nav>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', background: pal.cream2, border: `1px solid ${pal.line}`, borderRadius: 999, fontSize: 12, color: pal.muted, minWidth: 220 }}>
-          <IconSearch size={13} stroke="currentColor" />
-          <span style={{ flex: 1 }}>
-            Buscar pago o referencia
-            <span style={{ display: 'inline-block', width: 1.5, height: 11, background: pal.coral, marginLeft: 2, verticalAlign: 'middle', animation: 'ed-cursor-blink 1.1s step-end infinite' }} />
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={() => onNavigate('calendario')}
-          aria-label="Ver obligaciones pendientes"
-          style={{ width: 36, height: 36, border: `1px solid ${pal.line}`, background: pal.cream2, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', position: 'relative' }}
+        {/* Buscador real sobre la cola del mostrador (nombre, puesto, cuenta
+            o método). Antes era un div decorativo. */}
+        <label
+          style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', background: pal.cream2, border: `1px solid ${pal.line}`, borderRadius: 999, fontSize: 12, color: pal.muted, minWidth: 220 }}
         >
-          <IconCampana size={14} stroke="oklch(30% 0.02 40)" />
-          {atender && atender.length > 0 && (
-            <span style={{ position: 'absolute', top: 7, right: 7 }}>
-              <Dot c={pal.coral} glow size={7} />
-            </span>
-          )}
-        </button>
+          <IconSearch size={13} stroke="currentColor" />
+          <input
+            type="search"
+            value={busqueda}
+            onChange={(ev) => onBusquedaChange(ev.target.value)}
+            placeholder="Buscar pago o referencia"
+            aria-label="Buscar en la cola de pagos"
+            style={{ flex: 1, minWidth: 0, border: 'none', background: 'transparent', outline: 'none', font: 'inherit', color: pal.ink }}
+          />
+        </label>
+        <NotificacionesPanel notificaciones={notificaciones} onNotifClick={onNotifClick} />
       </div>
     </header>
   );
@@ -409,7 +468,7 @@ function GaugeSplit({ pagadoPct, listoPct, pagadoFmt, sumNetoFmt }) {
   );
 }
 
-function Seccion01Hero({ pagados, listos, esperando, totales, onPagar, onIrAlMostrador, onVerLibro }) {
+function Seccion01Hero({ pagados, listos, esperando, totales, onPagar, onNavigate, onVerLibro }) {
   const primerListo = listos[0];
   const pagadoPctNum = totales.sumNeto > 0 ? Math.round((pagados.reduce((a, e) => a + e.neto, 0) / totales.sumNeto) * 100) : 0;
   const listoPctNum = totales.sumNeto > 0 ? Math.round((listos.reduce((a, e) => a + e.neto, 0) / totales.sumNeto) * 100) : 0;
@@ -487,7 +546,7 @@ function Seccion01Hero({ pagados, listos, esperando, totales, onPagar, onIrAlMos
             ) : (
               <button
                 type="button"
-                onClick={() => onNavigateFallback()}
+                onClick={() => onNavigate('planilla')}
                 style={{ padding: '14px 26px', background: pal.ink, color: pal.cream, border: 'none', borderRadius: 14, fontWeight: 600, fontSize: 14, cursor: 'pointer' }}
               >
                 Ir a planilla a firmar ajustes
@@ -503,7 +562,7 @@ function Seccion01Hero({ pagados, listos, esperando, totales, onPagar, onIrAlMos
           </div>
         </div>
 
-        <div style={{ position: 'relative', padding: '22px 24px 20px', background: 'oklch(99% 0.006 70 / 0.7)', border: '1px solid oklch(88% 0.02 55 / 0.6)', borderRadius: 24 }}>
+        <div style={{ position: 'relative', padding: '22px 24px 20px', background: 'rgba(255, 253, 249, 0.98)', border: `1px solid ${pal.line2}`, borderRadius: 24, boxShadow: '0 20px 50px -16px rgba(0,0,0,0.08)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
             <span style={mono}>El movimiento del período</span>
             <span style={{ ...mono, color: pal.sage }}>{totales.pagoPct} ejecutado</span>
@@ -542,10 +601,6 @@ function Seccion01Hero({ pagados, listos, esperando, totales, onPagar, onIrAlMos
       </div>
     </section>
   );
-
-  function onNavigateFallback() {
-    onIrAlMostrador();
-  }
 }
 
 /* ---------------------------------------------------------
@@ -601,7 +656,10 @@ function PulsoCaja({ emps, pagados, listos, esperando, totales, canales }) {
           <div style={{ position: 'relative', height: 44, borderRadius: 12, overflow: 'hidden', background: 'oklch(35% 0.02 30)', display: 'flex' }}>
             {emps.map((e, i) => {
               const w = Math.max(2, (e.neto / base) * 100);
-              const esListo = e.pago !== 'pagado' && e.tieneAjuste;
+              // Misma regla de pagabilidad que el resto de la pantalla (C2):
+              // "listo" es cualquiera sin pagar todavía, no solo quien tenga
+              // un ajuste puntual.
+              const esListo = e.pago !== 'pagado';
               const esPagado = e.pago === 'pagado';
               return (
                 <div
@@ -689,10 +747,10 @@ function PulsoCaja({ emps, pagados, listos, esperando, totales, canales }) {
    Sección 03 — El mostrador: la cola de pagos
    --------------------------------------------------------- */
 
-function ComprobanteGrande({ e, index, total, onPagar, onNavigate }) {
+function ComprobanteGrande({ e, index, total, tasas, onPagar, onNavigate }) {
   const canal = canalDe(e.banco);
-  const valorHora = e.salario / 240;
-  const montoHorasExtra = valorHora * 1.5 * (e.horasExtra || 0);
+  const valorHora = e.valorHora || 0;
+  const montoHorasExtra = e.montoHorasExtra || 0;
   const movimientos = [];
   if (e.horasExtra > 0) movimientos.push({ label: '+ Horas extras', value: montoHorasExtra, positivo: true });
   if (e.bono > 0) movimientos.push({ label: '+ Bono', value: e.bono, positivo: true });
@@ -733,9 +791,7 @@ function ComprobanteGrande({ e, index, total, onPagar, onNavigate }) {
             <div style={{ ...mono, marginBottom: 4 }}>
               Comprobante · {String(index + 1).padStart(2, '0')} de {total}
             </div>
-            <div style={{ fontSize: 14, fontStyle: 'italic', color: pal.muted, ...serif }}>
-              Nº PAG–{HOY.anio}·{String(HOY.mesIndice + 1).padStart(2, '0')}{String(HOY.dia).padStart(2, '0')}
-            </div>
+            <div style={{ fontSize: 14, fontStyle: 'italic', color: pal.muted, ...serif }}>Sin número de comprobante</div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
@@ -779,7 +835,7 @@ function ComprobanteGrande({ e, index, total, onPagar, onNavigate }) {
                 <span style={{ color: pal.ink, ...num }}>{e.brutoFmt}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: `1px dotted ${pal.line2}` }}>
-                <span style={{ color: 'oklch(45% 0.12 25)' }}>− CCSS 10.67%</span>
+                <span style={{ color: 'oklch(45% 0.12 25)' }}>− CCSS {tasas ? `${(tasas.deduccionEmpleado * 100).toFixed(2)}%` : ''}</span>
                 <span style={{ color: 'oklch(45% 0.12 25)', ...num }}>− {e.dedFmt}</span>
               </div>
               {movimientos.map((m) => (
@@ -890,7 +946,45 @@ function FilaEsperando({ e, onNavigate }) {
   );
 }
 
-function AsideMostrador({ listos, canales, onPagarLote, onNavigate }) {
+/**
+ * Desglose real de los recibos del período, uno por persona, con las mismas
+ * cifras que muestra el comprobante en pantalla. CSV — generar un PDF con
+ * formato de recibo necesitaría una plantilla y una librería que hoy no
+ * existen, y prometerlo sería simular algo que no ocurre.
+ */
+function exportarRecibosCsv(emps, periodoActivo, empresaNombre) {
+  const filas = [
+    ['Empresa', empresaNombre || ''],
+    ['Período', periodoActivo?.titulo || ''],
+    [],
+    [
+      'Empleado', 'Puesto', 'Cuenta / método', 'Bruto', 'Horas extra', 'Monto horas extra', 'Bono', 'Deducción CCSS', 'Deducción puntual', 'Neto',
+      'Estado', 'Método de pago', 'Fecha de pago', 'Referencia bancaria', 'Comisión bancaria', 'Conciliado', 'Fecha de conciliación',
+    ],
+    ...emps.map((e) => [
+      e.nombre,
+      e.puesto,
+      e.banco,
+      e.brutoQ.toFixed(0),
+      String(e.horasExtra || 0),
+      (e.montoHorasExtra || 0).toFixed(0),
+      (e.bono || 0).toFixed(0),
+      e.ded.toFixed(0),
+      (e.deduccionPuntual || 0).toFixed(0),
+      e.neto.toFixed(0),
+      e.pago === 'pagado' ? 'Pagado' : 'Pendiente',
+      e.metodo,
+      e.fechaPago,
+      e.referenciaPago && e.referenciaPago !== '—' ? e.referenciaPago : '',
+      e.comisionPago ? e.comisionPago.toFixed(0) : '',
+      e.conciliado ? 'Sí' : 'No',
+      e.conciliado && e.conciliadoFecha !== '—' ? e.conciliadoFecha : '',
+    ]),
+  ];
+  descargarCsv(`recibos-${periodoActivo?.id || sufijoFecha(HOY)}`, filas);
+}
+
+function AsideMostrador({ listos, canales, onPagarLote, onNavigate, onDescargarRecibos }) {
   const primerListo = listos[0];
   return (
     <aside className="ed-aside-mostrador" style={{ position: 'sticky', top: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -905,15 +999,17 @@ function AsideMostrador({ listos, canales, onPagarLote, onNavigate }) {
                 <br />
                 Su comprobante está limpio.
               </div>
-              <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid oklch(30% 0.06 30 / 0.15)' }}>
-                <div style={{ fontSize: 14, fontStyle: 'italic', color: 'oklch(30% 0.06 30)', lineHeight: 1.4, ...serif }}>
-                  Los demás siguen en composición — no podés pagarlos hasta que Planilla los apruebe.
+              {listos.length > 1 && (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid oklch(30% 0.06 30 / 0.15)' }}>
+                  <div style={{ fontSize: 14, fontStyle: 'italic', color: 'oklch(30% 0.06 30)', lineHeight: 1.4, ...serif }}>
+                    Los otros {listos.length - 1} también están listos para cobrar — están en la cola, abajo.
+                  </div>
                 </div>
-              </div>
+              )}
             </>
           ) : (
             <div style={{ fontSize: 22, lineHeight: 1.25, color: pal.ink, fontStyle: 'italic', ...serif }}>
-              Nadie está listo todavía. Andá a Planilla y firmá un ajuste para abrir el primer comprobante.
+              Nadie está listo para cobrar en este momento.
             </div>
           )}
         </div>
@@ -923,7 +1019,8 @@ function AsideMostrador({ listos, canales, onPagarLote, onNavigate }) {
         <div style={{ ...mono, marginBottom: 14 }}>Por canal, cuando estén listos</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {canales.map((c) => {
-            const listosDelCanal = c.emps.filter((e) => e.pago !== 'pagado' && e.tieneAjuste);
+            // Misma regla de pagabilidad que el resto de la pantalla (C2).
+            const listosDelCanal = c.emps.filter((e) => e.pago !== 'pagado');
             const disabled = listosDelCanal.length === 0;
             return (
               <button
@@ -953,11 +1050,15 @@ function AsideMostrador({ listos, canales, onPagarLote, onNavigate }) {
               </button>
             );
           })}
+          {/* Descarga real del desglose de cada recibo del período (CSV, no
+              PDF: generar el documento con formato necesitaría una librería
+              y una plantilla que hoy no existen). Antes estaba deshabilitado
+              aunque el desglose ya estuviera calculado en esta misma pantalla. */}
           <button
             type="button"
-            aria-disabled="true"
-            title="Todavía no está conectado"
-            style={{ padding: '11px 14px', background: pal.cream2, color: pal.muted, border: `1px solid ${pal.line}`, borderRadius: 11, fontSize: 12, cursor: 'not-allowed', opacity: 0.55, textAlign: 'left' }}
+            onClick={onDescargarRecibos}
+            title="Descarga el desglose de todos los recibos del período en CSV"
+            style={{ padding: '11px 14px', background: pal.cream2, color: pal.ink, border: `1px solid ${pal.line}`, borderRadius: 11, fontSize: 12, cursor: 'pointer', textAlign: 'left' }}
           >
             Descargar todos los recibos
           </button>
@@ -975,10 +1076,19 @@ function AsideMostrador({ listos, canales, onPagarLote, onNavigate }) {
   );
 }
 
-function MostradorSection({ listos, esperando, canales, onPagar, onPagarLote, onNavigate }) {
+function MostradorSection({ listos, esperando, canales, onPagar, onPagarLote, onNavigate, onDescargarRecibos, busqueda, tasas }) {
   const [filtro, setFiltro] = useState('todos');
-  const visiblesListos = filtro === 'esperando' ? [] : listos;
-  const visiblesEsperando = filtro === 'listos' ? [] : esperando;
+  // El buscador del encabezado filtra esta misma cola: nombre, puesto,
+  // cuenta o método de pago ya registrado.
+  const q = (busqueda || '').trim().toLowerCase();
+  const coincide = (e) =>
+    !q ||
+    e.nombre.toLowerCase().includes(q) ||
+    (e.puesto || '').toLowerCase().includes(q) ||
+    (e.banco || '').toLowerCase().includes(q) ||
+    (e.metodo || '').toLowerCase().includes(q);
+  const visiblesListos = (filtro === 'esperando' ? [] : listos).filter(coincide);
+  const visiblesEsperando = (filtro === 'listos' ? [] : esperando).filter(coincide);
 
   return (
     <section id="pagos-mostrador" style={{ padding: '0 56px 56px' }}>
@@ -1015,15 +1125,20 @@ function MostradorSection({ listos, esperando, canales, onPagar, onPagarLote, on
               No hay pagos pendientes esta quincena.
             </div>
           )}
+          {listos.length + esperando.length > 0 && visiblesListos.length + visiblesEsperando.length === 0 && (
+            <div style={{ padding: '32px 28px', borderRadius: 18, background: pal.cream2, border: `1px solid ${pal.line}`, color: pal.muted, fontSize: 14 }}>
+              Ningún pago coincide con ese filtro o esa búsqueda.
+            </div>
+          )}
           {visiblesListos.map((e, i) => (
-            <ComprobanteGrande key={e.id} e={e} index={i} total={listos.length} onPagar={onPagar} onNavigate={onNavigate} />
+            <ComprobanteGrande key={e.id} e={e} index={i} total={listos.length} tasas={tasas} onPagar={onPagar} onNavigate={onNavigate} />
           ))}
           {visiblesEsperando.map((e) => (
             <FilaEsperando key={e.id} e={e} onNavigate={onNavigate} />
           ))}
         </div>
 
-        <AsideMostrador listos={listos} canales={canales} onPagarLote={onPagarLote} onNavigate={onNavigate} />
+        <AsideMostrador listos={listos} canales={canales} onPagarLote={onPagarLote} onNavigate={onNavigate} onDescargarRecibos={onDescargarRecibos} />
       </div>
     </section>
   );
@@ -1033,12 +1148,17 @@ function MostradorSection({ listos, esperando, canales, onPagar, onPagarLote, on
    Sección 04 — El libro mayor: pagos ejecutados
    --------------------------------------------------------- */
 
-function LibroMayor({ pagados, periodos }) {
+function LibroMayor({ pagados, periodos, onAlternarConciliacion }) {
   const sumPagados = pagados.reduce((a, e) => a + e.neto, 0);
+  // Suma real de las comisiones que se anotaron al marcar cada pago (Fase
+  // 10) — antes decía "No registrado" fijo aunque nunca hubiera existido
+  // ningún lugar donde registrar una comisión.
+  const sumComisiones = pagados.reduce((a, e) => a + (e.comisionPago || 0), 0);
+  const conciliados = pagados.filter((e) => e.conciliado).length;
   const anteriores = (periodos || []).filter((p) => p.estado === 'cerrado').slice(0, 4);
 
   return (
-    <section style={{ padding: '0 56px 56px' }}>
+    <section id="pagos-libro" style={{ padding: '0 56px 56px' }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 32, alignItems: 'baseline', marginBottom: 32, flexWrap: 'wrap' }}>
         <div>
           <div style={{ ...mono, marginBottom: 8 }}>Sección 04 · el libro mayor</div>
@@ -1071,8 +1191,12 @@ function LibroMayor({ pagados, periodos }) {
                   <span style={{ color: pal.ink, fontWeight: 600, ...num }}>{money(sumPagados / pagados.length)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12 }}>
-                  <span style={{ color: 'oklch(30% 0.08 145)' }}>Comisiones</span>
-                  <span style={{ color: pal.ink, fontWeight: 600, ...num }}>₡0</span>
+                  <span style={{ color: 'oklch(30% 0.08 145)' }}>Comisiones registradas</span>
+                  <span style={{ color: pal.ink, fontWeight: 600, ...num }}>{money(sumComisiones)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12 }}>
+                  <span style={{ color: 'oklch(30% 0.08 145)' }}>Conciliados a mano</span>
+                  <span style={{ color: pal.ink, fontWeight: 600, ...num }}>{conciliados} de {pagados.length}</span>
                 </div>
               </div>
             </div>
@@ -1099,6 +1223,33 @@ function LibroMayor({ pagados, periodos }) {
                   <span style={{ fontSize: 10, color: pal.muted, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.06em' }}>
                     {e.metodo} {e.fechaPago !== '—' ? `· ${e.fechaPago}` : ''}
                   </span>
+                  {/* Registro financiero manual (Fase 10): referencia y
+                      comisión reales del pago, más la conciliación —
+                      confirmación manual y reversible de que apareció en el
+                      estado de cuenta, no algo que el sistema verifique solo. */}
+                  {((e.referenciaPago && e.referenciaPago !== '—') || e.comisionPago > 0) && (
+                    <span style={{ fontSize: 9.5, color: pal.muted, fontFamily: "'JetBrains Mono', monospace" }}>
+                      {e.referenciaPago && e.referenciaPago !== '—' ? `Ref. ${e.referenciaPago}` : ''}
+                      {e.referenciaPago && e.referenciaPago !== '—' && e.comisionPago > 0 ? ' · ' : ''}
+                      {e.comisionPago > 0 ? `Comisión ${money(e.comisionPago)}` : ''}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onAlternarConciliacion(e.id)}
+                    style={{
+                      padding: '3px 10px',
+                      borderRadius: 999,
+                      fontSize: 9.5,
+                      fontWeight: 600,
+                      background: e.conciliado ? 'oklch(94% 0.06 145)' : 'transparent',
+                      color: e.conciliado ? pal.deepGreen : pal.muted,
+                      border: `1px solid ${e.conciliado ? pal.sage : pal.line}`,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {e.conciliado ? 'Conciliado ✓' : 'Marcar conciliado'}
+                  </button>
                 </div>
                 <div style={{ textAlign: 'right', fontSize: 26, color: pal.ink, ...num, ...serif }}>{e.netoFmt}</div>
               </article>
@@ -1164,14 +1315,16 @@ function CanalCard({ c, tono, index }) {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {c.emps.map((e) => {
-            const estado = e.pago === 'pagado' ? pal.sage : e.tieneAjuste ? pal.gold : 'oklch(75% 0.02 55)';
+            // Misma regla de pagabilidad que el resto de la pantalla (C2).
+            const listo = e.pago !== 'pagado';
+            const estado = e.pago === 'pagado' ? pal.sage : listo ? pal.gold : 'oklch(75% 0.02 55)';
             return (
               <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{ width: 26, height: 26, borderRadius: 999, background: e.avBg, color: e.avC, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontStyle: 'italic', ...serif }}>{e.ini}</div>
                 <div style={{ flex: 1, fontSize: 12 }}>
                   {e.nombre.split(' ')[0]} {(e.nombre.split(' ')[1] || '').charAt(0)}.
                 </div>
-                <div style={{ width: 7, height: 7, borderRadius: 999, background: estado, animation: e.pago !== 'pagado' && e.tieneAjuste ? 'ed-dot-glow 2.4s ease-in-out infinite' : undefined }} />
+                <div style={{ width: 7, height: 7, borderRadius: 999, background: estado, animation: listo ? 'ed-dot-glow 2.4s ease-in-out infinite' : undefined }} />
               </div>
             );
           })}
@@ -1181,7 +1334,10 @@ function CanalCard({ c, tono, index }) {
   );
 }
 
-function CanalesSection({ canales, totales, onNavigate }) {
+function CanalesSection({ canales, totales, pagados, onNavigate }) {
+  // Suma real registrada al marcar cada pago (Fase 10) — antes decía "Sin
+  // dato" fijo aunque no existiera ningún campo donde anotar una comisión.
+  const sumComisiones = (pagados || []).reduce((a, e) => a + (e.comisionPago || 0), 0);
   return (
     <section style={{ padding: '0 56px 56px' }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 32, alignItems: 'baseline', marginBottom: 32, flexWrap: 'wrap' }}>
@@ -1208,12 +1364,18 @@ function CanalesSection({ canales, totales, onNavigate }) {
         </div>
         <div style={{ width: 1, height: 44, background: pal.line }} />
         <div>
-          <div style={{ ...mono, marginBottom: 4 }}>Comisiones bancarias</div>
-          <div style={{ fontSize: 32, color: pal.deepGreen, ...num, ...serif }}>₡0</div>
+          <div style={{ ...mono, marginBottom: 4 }}>Comisiones bancarias registradas</div>
+          <div style={{ fontSize: 20, color: pal.ink, ...num, ...serif }}>{money(sumComisiones)}</div>
         </div>
         <div style={{ width: 1, height: 44, background: pal.line }} />
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" onClick={() => onNavigate('configuracion')} style={{ padding: '13px 22px', background: pal.ink, color: pal.cream, border: 'none', borderRadius: 12, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
+          {/* Configuración → "Pagos y horas extra" ya tiene la lista real de
+              métodos, así que este CTA lleva a donde de verdad se cambian. */}
+          <button
+            type="button"
+            onClick={() => onNavigate('configuracion')}
+            style={{ padding: '13px 22px', background: pal.cream2, color: pal.ink, border: `1px solid ${pal.line}`, borderRadius: 12, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
+          >
             Configurar métodos ↗
           </button>
         </div>
@@ -1383,16 +1545,29 @@ function Dock({ primerListo, onPagar, onVerLibro }) {
    Composición
    --------------------------------------------------------- */
 
-export default function Pagos({ emps, totales, atender, periodoActivo, periodos, onMarcarPagado, onMarcarPagadoLote, onNavigate }) {
-  const [pagando, setPagando] = useState(null); // { ids: [...] } | null
+export default function Pagos({ emps, totales, atender, periodoActivo, periodos, tasas, metodosPago, empresaNombre, notificaciones, onNotifClick, onMarcarPagado, onMarcarPagadoLote, onAlternarConciliacion, onNavigate }) {
+  const [pagando, setPagando] = useState(null); // { ids: [...], sugerido } | null
+  const [busqueda, setBusqueda] = useState('');
 
   const pagados = emps.filter((e) => e.pago === 'pagado');
-  const listos = emps.filter((e) => e.pago !== 'pagado' && e.tieneAjuste);
-  const esperando = emps.filter((e) => e.pago !== 'pagado' && !e.tieneAjuste);
+  // "Listo para cobrar" es la misma regla que ya usa Planilla (cualquiera
+  // que no esté pagado todavía) — no solo quien tenga un ajuste puntual. Un
+  // salario base sin horas extra ni bono es un pago tan válido como
+  // cualquiera otro; exigir un ajuste dejaba esta pantalla inoperante en el
+  // caso normal (planilla sin ajustes) y contradecía a Planilla, que sí deja
+  // pagar a cualquiera sin ajuste (auditoría C2).
+  const listos = emps.filter((e) => e.pago !== 'pagado');
+  const esperando = [];
+
+  function sugerirMetodo(ids) {
+    const seleccion = emps.filter((e) => ids.includes(e.id));
+    const sugeridos = new Set(seleccion.map((e) => sugerirMetodoPago(e.banco, metodosPago)));
+    return sugeridos.size === 1 ? [...sugeridos][0] : listaMetodos(metodosPago)[0];
+  }
 
   const canalesMap = new Map();
   emps.forEach((e) => {
-    const key = canalDe(e.banco);
+    const key = canalRealDe(e);
     if (!canalesMap.has(key)) canalesMap.set(key, { canal: key, emps: [], total: 0 });
     const c = canalesMap.get(key);
     c.emps.push(e);
@@ -1407,10 +1582,25 @@ export default function Pagos({ emps, totales, atender, periodoActivo, periodos,
     scrollEl.scrollTo({ top: Math.max(0, el.offsetTop - 24), behavior: reducedMotion() ? 'auto' : 'smooth' });
   }
 
+  function irAlLibroMayor() {
+    const el = document.getElementById('pagos-libro');
+    const scrollEl = document.getElementById('app-content');
+    if (!el || !scrollEl) return;
+    scrollEl.scrollTo({ top: Math.max(0, el.offsetTop - 24), behavior: reducedMotion() ? 'auto' : 'smooth' });
+  }
+
   return (
     <div className="screen ed-home" style={{ fontFamily: "'Albert Sans', system-ui, sans-serif", color: pal.ink, background: pal.cream, minHeight: '100%' }}>
       <div style={{ maxWidth: 1440, margin: '0 auto', position: 'relative' }}>
-        <Masthead periodoActivo={periodoActivo} atender={atender} onNavigate={onNavigate} />
+        <Masthead
+          periodoActivo={periodoActivo}
+          atender={atender}
+          notificaciones={notificaciones}
+          onNotifClick={onNotifClick}
+          onNavigate={onNavigate}
+          busqueda={busqueda}
+          onBusquedaChange={setBusqueda}
+        />
         <StatusBar pagadosN={pagados.length} listosN={listos.length} esperandoN={esperando.length} />
 
         <Seccion01Hero
@@ -1418,9 +1608,9 @@ export default function Pagos({ emps, totales, atender, periodoActivo, periodos,
           listos={listos}
           esperando={esperando}
           totales={totales}
-          onPagar={(ids) => setPagando({ ids })}
-          onIrAlMostrador={irAlMostrador}
-          onVerLibro={irAlMostrador}
+          onPagar={(ids) => setPagando({ ids, sugerido: sugerirMetodo(ids) })}
+          onNavigate={onNavigate}
+          onVerLibro={irAlLibroMayor}
         />
 
         <PulsoCaja emps={emps} pagados={pagados} listos={listos} esperando={esperando} totales={totales} canales={canales} />
@@ -1429,14 +1619,17 @@ export default function Pagos({ emps, totales, atender, periodoActivo, periodos,
           listos={listos}
           esperando={esperando}
           canales={canales}
-          onPagar={(ids) => setPagando({ ids })}
-          onPagarLote={(ids) => setPagando({ ids })}
+          onPagar={(ids) => setPagando({ ids, sugerido: sugerirMetodo(ids) })}
+          onPagarLote={(ids) => setPagando({ ids, sugerido: sugerirMetodo(ids) })}
           onNavigate={onNavigate}
+          onDescargarRecibos={() => exportarRecibosCsv(emps, periodoActivo, empresaNombre)}
+          busqueda={busqueda}
+          tasas={tasas}
         />
 
-        <LibroMayor pagados={pagados} periodos={periodos} />
+        <LibroMayor pagados={pagados} periodos={periodos} onAlternarConciliacion={onAlternarConciliacion} />
 
-        <CanalesSection canales={canales} totales={totales} onNavigate={onNavigate} />
+        <CanalesSection canales={canales} totales={totales} pagados={pagados} onNavigate={onNavigate} />
 
         <CierreSection
           pagados={pagados}
@@ -1444,17 +1637,19 @@ export default function Pagos({ emps, totales, atender, periodoActivo, periodos,
           esperando={esperando}
           totales={totales}
           periodoActivo={periodoActivo}
-          onPagar={(ids) => setPagando({ ids })}
+          onPagar={(ids) => setPagando({ ids, sugerido: sugerirMetodo(ids) })}
           onNavigate={onNavigate}
         />
 
         <Footer pagados={pagados} periodoActivo={periodoActivo} />
       </div>
 
-      <Dock primerListo={listos[0]} onPagar={(ids) => setPagando({ ids })} onVerLibro={irAlMostrador} />
+      <Dock primerListo={listos[0]} onPagar={(ids) => setPagando({ ids, sugerido: sugerirMetodo(ids) })} onVerLibro={irAlLibroMayor} />
 
       <PagoModal
         cantidad={pagando?.ids.length}
+        sugerido={pagando?.sugerido}
+        metodos={metodosPago}
         onClose={() => setPagando(null)}
         onConfirmar={(datos) => {
           if (pagando.ids.length === 1) onMarcarPagado(pagando.ids[0], datos);

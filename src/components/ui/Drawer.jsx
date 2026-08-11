@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { color, radius, elevation } from '../../theme/tokens.js';
 import { Button } from './Primitives.jsx';
@@ -34,8 +35,11 @@ export function Drawer({ open, onClose, side = 'right', title, width = 320, back
   }, [open, onClose]);
 
   if (!rendered) return null;
+  if (typeof document === 'undefined') return null;
 
-  return (
+  // Igual que `Modal`: se monta en `<body>` para que su `position: fixed` mida
+  // contra la ventana y no contra un ancestro transformado (ver Modal.jsx).
+  return createPortal(
     <div
       className={`scrim${visible ? ' scrim--visible' : ''}`}
       onClick={onClose}
@@ -80,6 +84,7 @@ export function Drawer({ open, onClose, side = 'right', title, width = 320, back
         )}
         <div style={{ flex: 1, minHeight: 0 }}>{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

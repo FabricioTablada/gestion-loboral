@@ -1,6 +1,5 @@
 import { color, font } from '../theme/tokens.js';
 import { navGroups, screens } from '../navigation.js';
-import { usuario } from '../data/mock.js';
 
 /** Isotipo: cuadrado ámbar cortado en diagonal. */
 function Logo() {
@@ -49,7 +48,7 @@ function GroupLabel({ children, first }) {
  * markup se reutiliza en el sidebar fijo de escritorio y dentro del
  * Drawer de navegación móvil (Fase 1 · B.4 / F.1), sin duplicar nada.
  */
-export function SidebarContent({ current, onNavigate, empresaNombre, modulo }) {
+export function SidebarContent({ current, onNavigate, empresaNombre, modulo, usuario }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Marca */}
@@ -175,22 +174,8 @@ export function SidebarContent({ current, onNavigate, empresaNombre, modulo }) {
   );
 }
 
-/** Sidebar fijo de escritorio. Oculto bajo 900px (ver global.css); su
- * contenido reaparece en el Drawer móvil montado desde App.jsx. */
-export default function Sidebar({ current, onNavigate, empresaNombre, modulo }) {
-  return (
-    <aside
-      className="app-sidebar"
-      style={{
-        width: 262,
-        flexShrink: 0,
-        background: color.ink,
-        display: 'flex',
-        flexDirection: 'column',
-        borderRight: `1px solid ${color.onInk}`,
-      }}
-    >
-      <SidebarContent current={current} onNavigate={onNavigate} empresaNombre={empresaNombre} modulo={modulo} />
-    </aside>
-  );
-}
+/* El `Sidebar` fijo de escritorio se eliminó junto con el shell viejo: todas
+   las pantallas son editoriales y traen su propio masthead. Lo que queda
+   —`SidebarContent`— sigue siendo la navegación completa, y se monta dentro
+   del Drawer móvil desde App.jsx, que bajo 1180px es la única forma de
+   moverse entre pantallas. */

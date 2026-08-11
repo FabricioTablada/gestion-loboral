@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { color, font, radius, elevation } from '../../theme/tokens.js';
 import { Button } from './Primitives.jsx';
@@ -7,8 +8,18 @@ import { IconClose } from './Icons.jsx';
 /**
  * Modal centrado: scale(0.97→1) + fade, con scrim (Fase 1 · I.2 / I.5).
  * Nivel 3 de elevación. Cierra con Esc, click en el scrim, o el botón ×.
- * No gestiona ningún flujo de negocio — es el contenedor que usarán los
- * formularios/confirmaciones cuando se conecten en una fase posterior.
+ *
+ * Se monta con `createPortal` directo en `<body>`, NO donde se declara. Sin
+ * eso el modal quedaba invisible en la práctica: todas las pantallas cuelgan
+ * de un contenedor `.screen`, que en global.css lleva
+ * `animation: screen-in ... both` sobre `transform`. Con `fill-mode: both` el
+ * elemento conserva un `transform` distinto de `none` al terminar, y un
+ * ancestro transformado se convierte en el bloque contenedor de sus
+ * descendientes `position: fixed`. Así, el scrim dejaba de medir contra la
+ * ventana y pasaba a medir contra toda la altura de la pantalla editorial: se
+ * veía el fondo oscuro (enorme) pero la tarjeta del modal, centrada dentro de
+ * ese bloque altísimo, caía miles de píxeles fuera de la vista. El modal
+ * siempre estuvo montado y funcionando — simplemente no se veía.
  */
 export function Modal({ open, onClose, title, subtitle, footer, children, width = 480 }) {
   const [rendered, setRendered] = useState(open);
@@ -37,8 +48,9 @@ export function Modal({ open, onClose, title, subtitle, footer, children, width 
   }, [open, onClose]);
 
   if (!rendered) return null;
+  if (typeof document === 'undefined') return null;
 
-  return (
+  return createPortal(
     <div
       className={`scrim${visible ? ' scrim--visible' : ''}`}
       onClick={onClose}
@@ -101,7 +113,8 @@ export function Modal({ open, onClose, title, subtitle, footer, children, width 
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

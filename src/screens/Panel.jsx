@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { HOY, ccss as ccssMock } from '../data/mock.js';
+import { HOY } from '../data/mock.js';
 import { money } from '../lib/format.js';
-import { IconSearch, IconCampana, IconCheck, IconChevronRight } from '../components/ui/Icons.jsx';
+import { IconSearch, IconCheck, IconChevronRight } from '../components/ui/Icons.jsx';
+import { NotificacionesPanel } from '../components/ui/NotificacionesPanel.jsx';
+import ScrollRail, { Logo } from '../components/ScrollRail.jsx';
 
 /**
  * Home — "Editorial Command Center". Composición propia, exclusiva de esta
@@ -141,16 +143,81 @@ const MESES_LARGO = [
   'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
 ];
 
-function fechaLarga(hoy) {
+/** Saludo real según la hora del reloj del navegador — antes decía "Buenos
+ * días" siempre, sin importar la hora real (HOY es solo una fecha simulada
+ * para datos de negocio, no tiene hora; el saludo sí puede usar la hora
+ * real sin contradecir esa simulación). */
+function saludoDe() {
+  const hora = new Date().getHours();
+  if (hora < 12) return 'Buenos días';
+  if (hora < 19) return 'Buenas tardes';
+  return 'Buenas noches';
+}
+
+/** "Martes" — día de la semana real de la fecha dada. */
+function nombreDiaDe(hoy) {
   const weekday = new Date(hoy.anio, hoy.mesIndice, hoy.dia).toLocaleDateString('es-CR', { weekday: 'long' });
-  const cap = weekday.charAt(0).toUpperCase() + weekday.slice(1);
-  return `${cap} · ${String(hoy.dia).padStart(2, '0')} ${MESES_LARGO[hoy.mesIndice]} ${hoy.anio}`;
+  return weekday.charAt(0).toUpperCase() + weekday.slice(1);
+}
+
+function fechaLarga(hoy) {
+  return `${nombreDiaDe(hoy)} · ${String(hoy.dia).padStart(2, '0')} ${MESES_LARGO[hoy.mesIndice]} ${hoy.anio}`;
 }
 
 /** Extrae el día numérico de cadenas tipo "Vence 20 ago 2026" / "Venció 05 ago 2026". */
 function diaDe(fecha) {
   const m = /(\d{1,2})/.exec(fecha || '');
   return m ? parseInt(m[1], 10) : null;
+}
+
+/** Extrae el mes abreviado real de cadenas tipo "Vence 20 ago 2026" (nunca un mes fijo). */
+function mesAbrDe(fecha) {
+  const m = /\d{1,2}\s+([a-záéíóúñ]{3})/i.exec(fecha || '');
+  return m ? m[1].toUpperCase() : '';
+}
+
+const MESES_ABR_IDX = { ene: 0, feb: 1, mar: 2, abr: 3, may: 4, jun: 5, jul: 6, ago: 7, sep: 8, oct: 9, nov: 10, dic: 11 };
+
+/**
+ * Parsea {dia, mesIndice, anio} de cadenas reales tipo "Vence 15 ago 2026" /
+ * "Renueva 30 nov 2026". Null si no hay fecha real (p. ej. "Sin fecha
+ * configurada") — nunca se inventa un mes.
+ */
+function fechaRealDe(fecha) {
+  const m = /(\d{1,2})\s+([a-záéíóúñ]{3})\s+(\d{4})/i.exec(fecha || '');
+  if (!m) return null;
+  const mesIndice = MESES_ABR_IDX[m[2].toLowerCase()];
+  if (mesIndice === undefined) return null;
+  return { dia: parseInt(m[1], 10), mesIndice, anio: parseInt(m[3], 10) };
+}
+
+/**
+ * La obligación más urgente de verdad: primero cualquier `vencido` (entre
+ * varios, el de fecha real más próxima; sin fecha real, igual cuenta como
+ * urgente). Si no hay nada vencido, la de fecha real más cercana entre las
+ * que sí tienen un vencimiento configurado — nunca una obligación "sin
+ * fecha configurada" por delante de otra que sí vence pronto, solo porque
+ * apareciera antes en la lista (antes: CCSS sin fecha le ganaba al pago de
+ * planilla que vencía en 6 días).
+ */
+function prioridadReal(atender) {
+  if (!atender || atender.length === 0) return null;
+  const conFecha = (lista) =>
+    lista
+      .map((o) => ({ o, f: fechaRealDe(o.fecha) }))
+      .filter((x) => x.f)
+      .sort((a, b) => new Date(a.f.anio, a.f.mesIndice, a.f.dia) - new Date(b.f.anio, b.f.mesIndice, b.f.dia));
+
+  const vencidos = atender.filter((o) => o.k === 'vencido');
+  if (vencidos.length) {
+    const conFechaVencidos = conFecha(vencidos);
+    return conFechaVencidos.length ? conFechaVencidos[0].o : vencidos[0];
+  }
+
+  const restoConFecha = conFecha(atender);
+  if (restoConFecha.length) return restoConFecha[0].o;
+
+  return atender[0];
 }
 
 /* ---------------------------------------------------------
@@ -304,7 +371,159 @@ const NAV_ITEMS = [
   { key: 'historial', label: 'Historial' },
 ];
 
-function Masthead({ usuario, periodoActivo, atender, onNavigate }) {
+/**
+ * Buscador del encabezado del Home. Antes era un `<div>` decorativo con
+ * `cursor: not-allowed` y un badge "⌘K" que no abría nada. Ahora busca de
+ * verdad sobre lo que el sistema ya conoce: las pantallas del menú y las
+ * personas activas de la planilla. Elegir una pantalla navega; elegir a una
+ * persona abre su expediente en Equipo — el mismo camino que ya usa Reportes.
+ */
+function BuscadorHome({ emps, onNavigate, onSeleccionarEmpleado }) {
+  const [q, setQ] = useState('');
+  const [abierto, setAbierto] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!abierto) return undefined;
+    function onDocClick(ev) {
+      if (ref.current && !ref.current.contains(ev.target)) setAbierto(false);
+    }
+    function onKey(ev) {
+      if (ev.key === 'Escape') setAbierto(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [abierto]);
+
+  const texto = q.trim().toLowerCase();
+  const resultados = texto
+    ? [
+        ...NAV_ITEMS.filter((i) => i.label.toLowerCase().includes(texto)).map((i) => ({
+          key: `nav-${i.key}`,
+          titulo: i.label,
+          sub: 'Ir a la sección',
+          accion: () => onNavigate(i.key),
+        })),
+        ...(emps || [])
+          .filter((e) => e.nombre.toLowerCase().includes(texto) || (e.puesto || '').toLowerCase().includes(texto))
+          .map((e) => ({
+            key: `emp-${e.id}`,
+            titulo: e.nombre,
+            sub: e.puesto,
+            accion: () => onSeleccionarEmpleado(e.id),
+          })),
+      ].slice(0, 8)
+    : [];
+
+  function elegir(r) {
+    setQ('');
+    setAbierto(false);
+    r.accion();
+  }
+
+  const mostrar = abierto && !!texto;
+  // Mismo patrón que `Modal.jsx`: entra animado pero antes desaparecía de
+  // golpe al cerrar — se mantiene montado un instante más para que la
+  // salida también anime (revisión de motion).
+  const [renderizado, setRenderizado] = useState(false);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (mostrar) {
+      setRenderizado(true);
+      const raf = requestAnimationFrame(() => setVisible(true));
+      return () => cancelAnimationFrame(raf);
+    }
+    setVisible(false);
+    const t = setTimeout(() => setRenderizado(false), 160);
+    return () => clearTimeout(t);
+  }, [mostrar]);
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <label
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '8px 14px',
+          background: pal.cream2,
+          border: `1px solid ${pal.line}`,
+          borderRadius: 999,
+          fontSize: 12,
+          color: pal.muted,
+          minWidth: 200,
+        }}
+      >
+        <IconSearch size={13} stroke="currentColor" />
+        <input
+          type="search"
+          value={q}
+          onChange={(ev) => {
+            setQ(ev.target.value);
+            setAbierto(true);
+          }}
+          onFocus={() => setAbierto(true)}
+          onKeyDown={(ev) => {
+            if (ev.key === 'Enter' && resultados[0]) elegir(resultados[0]);
+          }}
+          placeholder="Buscar sección o persona"
+          aria-label="Buscar sección o persona"
+          style={{ flex: 1, minWidth: 0, border: 'none', background: 'transparent', outline: 'none', font: 'inherit', color: pal.ink }}
+        />
+      </label>
+
+      {renderizado && (
+        <div
+          className={`ed-pop-in${visible ? ' ed-pop-in--visible' : ''}`}
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            right: 0,
+            minWidth: 260,
+            background: pal.surface,
+            border: `1px solid ${pal.line}`,
+            borderRadius: 14,
+            boxShadow: '0 24px 48px -20px oklch(20% 0.02 30 / 0.35)',
+            overflow: 'hidden',
+            zIndex: 40,
+            transformOrigin: 'top right',
+          }}
+        >
+          {resultados.length === 0 && (
+            <div style={{ padding: '14px 16px', fontSize: 12, color: pal.muted, fontStyle: 'italic' }}>Sin coincidencias.</div>
+          )}
+          {resultados.map((r) => (
+            <button
+              key={r.key}
+              type="button"
+              onClick={() => elegir(r)}
+              style={{
+                width: '100%',
+                textAlign: 'left',
+                display: 'block',
+                padding: '10px 16px',
+                border: 'none',
+                borderBottom: `1px solid ${pal.line2}`,
+                background: 'transparent',
+                font: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontSize: 13, color: pal.ink }}>{r.titulo}</div>
+              <div style={{ fontSize: 11, color: pal.muted }}>{r.sub}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Masthead({ usuario, periodoActivo, atender, emps, notificaciones, onNotifClick, onNavigate, onSeleccionarEmpleado }) {
   return (
     <>
       <header
@@ -379,64 +598,8 @@ function Masthead({ usuario, periodoActivo, atender, onNavigate }) {
         </nav>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10 }}>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              padding: '8px 14px',
-              background: pal.cream2,
-              border: `1px solid ${pal.line}`,
-              borderRadius: 999,
-              fontSize: 12,
-              color: pal.muted,
-              minWidth: 200,
-            }}
-          >
-            <IconSearch size={13} stroke="currentColor" />
-            <span style={{ flex: 1 }}>
-              Buscar o preguntar
-              <span
-                style={{
-                  display: 'inline-block',
-                  width: 1.5,
-                  height: 11,
-                  background: pal.coral,
-                  marginLeft: 2,
-                  verticalAlign: 'middle',
-                  animation: 'ed-cursor-blink 1.1s step-end infinite',
-                }}
-              />
-            </span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", padding: '1px 6px', borderRadius: 5, background: 'oklch(94% 0.01 70)', fontSize: 10 }}>
-              ⌘K
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => onNavigate('calendario')}
-            aria-label="Ver obligaciones pendientes"
-            style={{
-              width: 36,
-              height: 36,
-              border: `1px solid ${pal.line}`,
-              background: pal.cream2,
-              borderRadius: 999,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              position: 'relative',
-            }}
-          >
-            <IconCampana size={14} stroke="oklch(30% 0.02 40)" />
-            {atender.length > 0 && <Dot c={pal.coral} glow size={7} />}
-            {atender.length > 0 && (
-              <span style={{ position: 'absolute', top: 7, right: 7 }}>
-                <Dot c={pal.coral} glow size={7} />
-              </span>
-            )}
-          </button>
+          <BuscadorHome emps={emps} onNavigate={onNavigate} onSeleccionarEmpleado={onSeleccionarEmpleado} />
+          <NotificacionesPanel notificaciones={notificaciones} onNotifClick={onNotifClick} />
           <div
             style={{
               width: 36,
@@ -490,8 +653,16 @@ function PeriodCard({ periodoActivo, totales, atender }) {
   const finDia = periodoActivo?.mitad === 'b' ? diasEnMes : 15;
   const totalDias = Math.max(1, finDia - inicioDia + 1);
 
-  const vencidoDia = diaDe(atender.find((o) => o.k === 'vencido')?.fecha);
-  const pagoDia = diaDe(atender.find((o) => o.k === 'pendiente')?.fecha);
+  // Mismo criterio que el Timeline: solo cuenta una fecha real que caiga en
+  // el mes/año del período activo — nunca el primer número de una fecha de
+  // otro mes (p. ej. la vigencia de la póliza en noviembre) marcado sobre
+  // los días de esta quincena (auditoría F11).
+  const enEsteMes = (o) => {
+    const f = fechaRealDe(o?.fecha);
+    return f && periodoActivo && f.anio === periodoActivo.anio && f.mesIndice === periodoActivo.mesIndice ? f.dia : null;
+  };
+  const vencidoDia = enEsteMes(atender.find((o) => o.k === 'vencido'));
+  const pagoDia = enEsteMes(atender.find((o) => o.k === 'pendiente'));
 
   const dias = [];
   for (let d = inicioDia; d <= finDia; d++) dias.push(d);
@@ -596,9 +767,9 @@ function Hero({ usuario, totales, atender, periodoActivo, onNavigate }) {
   const primerNombre = usuario.nombre.split(' ')[0];
   const pagoPctNum = parseInt(totales.pagoPct, 10) || 0;
   return (
-    <section style={{ position: 'relative', padding: '68px 56px 44px', overflow: 'hidden' }}>
+    <section style={{ position: 'relative', padding: '44px 56px 44px', overflow: 'hidden' }}>
       <Landscape />
-      <div className="ed-grid-hero" style={{ position: 'relative', display: 'grid', gridTemplateColumns: '8fr 4fr', gap: 48, alignItems: 'end' }}>
+      <div className="ed-grid-hero" style={{ position: 'relative', display: 'grid', gridTemplateColumns: '8fr 4fr', gap: 48, alignItems: 'start' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
             <span style={{ width: 32, height: 1, background: pal.ink }} />
@@ -611,7 +782,7 @@ function Hero({ usuario, totales, atender, periodoActivo, onNavigate }) {
             className="ed-hero-title"
             style={{ fontSize: 88, lineHeight: 0.95, margin: '0 0 20px', letterSpacing: '-0.02em', color: pal.ink, animation: 'ed-fade-up 900ms ease-out both', ...serif }}
           >
-            Buenos días,
+            {saludoDe()},
             <br />
             <em
               style={{
@@ -690,18 +861,27 @@ function Timeline({ periodoActivo, atender }) {
   const inicioDia = periodoActivo?.mitad === 'b' ? 16 : 1;
   const diasEnMes = periodoActivo ? new Date(periodoActivo.anio, periodoActivo.mesIndice + 1, 0).getDate() : 30;
   const finDiaDef = periodoActivo?.mitad === 'b' ? diasEnMes : 15;
-  const maxMarkerDia = Math.max(0, ...atender.map((o) => diaDe(o.fecha)).filter((d) => d !== null));
+
+  // Solo entran al timeline las obligaciones cuya fecha real cae en el
+  // mismo mes/año del período activo — antes se tomaba el primer número de
+  // CUALQUIER fecha (incluida "Renueva 30 nov 2026", la vigencia de la
+  // póliza), así que un evento de noviembre terminaba dibujado dentro de un
+  // timeline de agosto (auditoría F11). Sin período activo no hay contra
+  // qué comparar, así que no se marca nada.
+  const marcadoresReales = periodoActivo
+    ? atender
+        .map((o) => ({ o, f: fechaRealDe(o.fecha) }))
+        .filter((x) => x.f && x.f.anio === periodoActivo.anio && x.f.mesIndice === periodoActivo.mesIndice)
+    : [];
+
+  const maxMarkerDia = Math.max(0, ...marcadoresReales.map((x) => x.f.dia));
   const maxDia = Math.max(finDiaDef, maxMarkerDia);
   const totalDias = Math.max(1, maxDia - inicioDia);
 
   const pct = (dia) => Math.min(100, Math.max(0, ((dia - inicioDia) / totalDias) * 100));
   const hoyPct = pct(HOY.dia);
 
-  const marcadores = atender
-    .map((o) => ({ o, dia: diaDe(o.fecha) }))
-    .filter((x) => x.dia !== null)
-    .map((x) => ({ ...x, pct: pct(x.dia) }))
-    .sort((a, b) => a.pct - b.pct);
+  const marcadores = marcadoresReales.map((x) => ({ o: x.o, dia: x.f.dia, pct: pct(x.f.dia) })).sort((a, b) => a.pct - b.pct);
 
   const toneFor = (k) => (k === 'vencido' ? pal.coral : k === 'proximo' ? 'oklch(80% 0.13 65)' : pal.gold);
 
@@ -731,7 +911,7 @@ function Timeline({ periodoActivo, atender }) {
 
         <div style={{ position: 'absolute', left: '0%', top: 0, textAlign: 'center', transform: 'translateX(-50%)' }}>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: pal.muted, marginBottom: 38 }}>
-            {String(inicioDia).padStart(2, '0')}·AGO
+            {String(inicioDia).padStart(2, '0')}·{periodoActivo?.mes ? periodoActivo.mes.slice(0, 3).toUpperCase() : ''}
           </div>
           <div style={{ width: 10, height: 10, borderRadius: 999, background: pal.sage, margin: '0 auto' }} />
           <div style={{ fontSize: 14, fontStyle: 'italic', color: pal.muted, marginTop: 12, ...serif }}>Apertura</div>
@@ -740,10 +920,16 @@ function Timeline({ periodoActivo, atender }) {
         {marcadores.map(({ o, dia, pct: p }) => {
           const esPulso = o.k === 'vencido';
           const esCCSS = o.target === 'ccss';
+          // Cuando un vencimiento cae muy cerca de HOY en el timeline (p. ej.
+          // día 10 vs día 11 de HOY), los bloques de texto de ambos
+          // marcadores quedan a la misma altura y se superponen — se baja el
+          // texto del marcador (no el punto, que sigue sobre la línea) para
+          // que quede debajo del texto de HOY en vez de encima.
+          const cercaDeHoy = Math.abs(p - hoyPct) < 11;
           return (
             <div key={o.t} style={{ position: 'absolute', left: `${p}%`, top: 0, textAlign: 'center', transform: 'translateX(-50%)', minWidth: 130 }}>
               <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: toneFor(o.k), fontWeight: 600, marginBottom: 32 }}>
-                {String(dia).padStart(2, '0')}·AGO
+                {String(dia).padStart(2, '0')}·{mesAbrDe(o.fecha)}
               </div>
               <div style={{ position: 'relative', width: esPulso ? 18 : 14, height: esPulso ? 18 : 14, margin: '0 auto' }}>
                 {esPulso && (
@@ -761,11 +947,13 @@ function Timeline({ periodoActivo, atender }) {
                   }}
                 />
               </div>
-              <div style={{ marginTop: 12 }}>
+              <div style={{ marginTop: cercaDeHoy ? 56 : 12 }}>
                 {esCCSS ? (
                   <>
                     <div style={{ fontSize: 13, color: pal.ink, ...serif }}>CCSS ·</div>
-                    <div style={{ fontSize: 14, fontStyle: 'italic', color: pal.ink, ...serif }}>Julio</div>
+                    <div style={{ fontSize: 14, fontStyle: 'italic', color: pal.ink, ...serif }}>
+                      {o.t.split('·')[1]?.trim().split(' ')[0] || o.t}
+                    </div>
                     <div style={{ fontSize: 11, color: toneFor(o.k), fontWeight: 600, marginTop: 2 }}>{o.dias.toLowerCase()}</div>
                     <div style={{ fontSize: 10, color: toneFor(o.k) }}>-</div>
                     <div style={{ fontSize: 11, color: toneFor(o.k), fontWeight: 600 }}>{o.montoFmt}</div>
@@ -806,7 +994,10 @@ function Timeline({ periodoActivo, atender }) {
             ◈
           </div>
           <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 14, color: pal.ink, fontWeight: 600, ...serif }}>{HOY.nombreDia}</div>
+            {/* `HOY` (mock.js) solo tiene anio/mesIndice/dia: `HOY.nombreDia`
+                era `undefined` y este rótulo salía vacío. El día de la semana
+                real se deriva de la fecha, igual que en `fechaLarga`. */}
+            <div style={{ fontSize: 14, color: pal.ink, fontWeight: 600, ...serif }}>{nombreDiaDe(HOY)}</div>
             <div style={{ fontSize: 10.5, color: pal.muted }}>Escribiendo esta quincena</div>
           </div>
         </div>
@@ -969,7 +1160,7 @@ function BigNumberStrip({ totales, emps, barras }) {
    Lo que atender
    --------------------------------------------------------- */
 
-function AtenderUrgente({ o, emps, poliza, onNavigate }) {
+function AtenderUrgente({ o, emps, poliza, onAtender }) {
   return (
     <div
       style={{
@@ -999,7 +1190,7 @@ function AtenderUrgente({ o, emps, poliza, onNavigate }) {
         <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
           <button
             type="button"
-            onClick={() => onNavigate(o.target)}
+            onClick={() => onAtender(o.target)}
             style={{ padding: '12px 22px', background: pal.cream, color: pal.ink, border: 'none', borderRadius: 12, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
           >
             Resolver ahora
@@ -1028,6 +1219,10 @@ function AtenderUrgente({ o, emps, poliza, onNavigate }) {
 
 function AtenderPago({ o, emps, onNavigate }) {
   const dia = diaDe(o.fecha);
+  // Mes real de la fecha de esta obligación — nunca "Agosto" fijo (auditoría
+  // F13). Sin fecha real configurada, no se inventa un mes.
+  const f = fechaRealDe(o.fecha);
+  const mesLabel = f ? MESES_LARGO[f.mesIndice].charAt(0).toUpperCase() + MESES_LARGO[f.mesIndice].slice(1) : '';
   const pendientes = emps.filter((e) => e.pago !== 'pagado').slice(0, 4);
   return (
     <div
@@ -1047,7 +1242,7 @@ function AtenderPago({ o, emps, onNavigate }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 22 }}>
           <span style={{ fontSize: 48, lineHeight: 1, color: 'oklch(35% 0.10 30)', fontStyle: 'italic', ...serif }}>{dia}</span>
           <div>
-            <div style={{ ...mono, fontSize: 10, color: 'oklch(35% 0.06 30)' }}>Agosto</div>
+            <div style={{ ...mono, fontSize: 10, color: 'oklch(35% 0.06 30)' }}>{mesLabel}</div>
             <div style={{ fontSize: 11, color: 'oklch(38% 0.11 30)', fontWeight: 500 }}>{o.dias}</div>
           </div>
         </div>
@@ -1094,7 +1289,7 @@ function AtenderPago({ o, emps, onNavigate }) {
   );
 }
 
-function AtenderProximo({ o, onNavigate }) {
+function AtenderProximo({ o, onAtender, ccssCuota }) {
   const esCcss = o.target === 'ccss';
   return (
     <div
@@ -1121,11 +1316,11 @@ function AtenderProximo({ o, onNavigate }) {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 24 }}>
           <div>
             <div style={{ ...mono, fontSize: 9 }}>Obrera</div>
-            <div style={{ fontSize: 19, color: pal.ink, marginTop: 2, ...serif }}>{money(ccssMock.cuotaObrera)}</div>
+            <div style={{ fontSize: 19, color: pal.ink, marginTop: 2, ...serif }}>{ccssCuota ? money(ccssCuota.obrera) : '—'}</div>
           </div>
           <div>
             <div style={{ ...mono, fontSize: 9 }}>Patronal</div>
-            <div style={{ fontSize: 19, color: pal.ink, marginTop: 2, ...serif }}>{money(ccssMock.cuotaPatronal)}</div>
+            <div style={{ fontSize: 19, color: pal.ink, marginTop: 2, ...serif }}>{ccssCuota ? money(ccssCuota.patronal) : '—'}</div>
           </div>
         </div>
       )}
@@ -1137,7 +1332,7 @@ function AtenderProximo({ o, onNavigate }) {
         </div>
         <button
           type="button"
-          onClick={() => onNavigate(o.target)}
+          onClick={() => onAtender(o.target)}
           style={{ padding: '9px 16px', background: pal.cream, color: pal.ink, border: `1px solid ${pal.line}`, borderRadius: 10, fontSize: 12, cursor: 'pointer' }}
         >
           Ver detalle →
@@ -1147,11 +1342,15 @@ function AtenderProximo({ o, onNavigate }) {
   );
 }
 
-function AtenderSection({ atender, emps, poliza, onNavigate }) {
-  const vencido = atender.find((o) => o.k === 'vencido');
-  const pendiente = atender.find((o) => o.k === 'pendiente');
-  const proximo = atender.find((o) => o.k === 'proximo');
-  const cards = [vencido, pendiente, proximo].filter(Boolean);
+function AtenderSection({ atender, emps, poliza, ccssCuota, onNavigate, onAtender }) {
+  // Todas las obligaciones reales por atender, agrupadas por estado — antes
+  // se tomaba una sola por estado con `find()`, así que con dos
+  // obligaciones "próximo" a la vez (p. ej. CCSS e INS) la segunda
+  // desaparecía sin aviso (auditoría F3).
+  const vencidos = atender.filter((o) => o.k === 'vencido');
+  const pendientes = atender.filter((o) => o.k === 'pendiente');
+  const proximos = atender.filter((o) => o.k === 'proximo');
+  const cards = [...vencidos, ...pendientes, ...proximos];
 
   return (
     <section style={{ padding: '0 56px 56px' }}>
@@ -1203,14 +1402,20 @@ function AtenderSection({ atender, emps, poliza, onNavigate }) {
           style={{
             display: 'grid',
             gridTemplateColumns:
-              cards.length === 3 ? '5fr 3fr 4fr' : cards.length === 2 ? '1fr 1fr' : '1fr',
+              cards.length === 3 ? '5fr 3fr 4fr' : cards.length === 2 ? '1fr 1fr' : cards.length === 1 ? '1fr' : 'repeat(auto-fit, minmax(260px, 1fr))',
             gap: 20,
             alignItems: 'stretch',
           }}
         >
-          {vencido && <AtenderUrgente o={vencido} emps={emps} poliza={poliza} onNavigate={onNavigate} />}
-          {pendiente && <AtenderPago o={pendiente} emps={emps} onNavigate={onNavigate} />}
-          {proximo && <AtenderProximo o={proximo} onNavigate={onNavigate} />}
+          {vencidos.map((o) => (
+            <AtenderUrgente key={o.t} o={o} emps={emps} poliza={poliza} onAtender={onAtender} />
+          ))}
+          {pendientes.map((o) => (
+            <AtenderPago key={o.t} o={o} emps={emps} onNavigate={onNavigate} />
+          ))}
+          {proximos.map((o) => (
+            <AtenderProximo key={o.t} o={o} onAtender={onAtender} ccssCuota={ccssCuota} />
+          ))}
         </div>
       )}
     </section>
@@ -1331,7 +1536,7 @@ function EquipoSection({ emps, onNavigate }) {
             </span>
           </div>
         </div>
-        <div style={{ borderLeft: `1px solid ${pal.line}`, paddingLeft: 32 }}>
+        <div className="ed-equipo-featured-detail" style={{ borderLeft: `1px solid ${pal.line}`, paddingLeft: 32 }}>
           <div style={{ fontSize: 22, fontStyle: 'italic', lineHeight: 1.35, color: 'oklch(30% 0.03 30)', ...serif }}>
             {primerNombreFeatured} lleva {featured.puesto.toLowerCase()} desde {featured.ingreso} —{' '}
             {featured.pago === 'pagado' ? 'ya cobró esta quincena' : 'todavía no cobra esta quincena'}.
@@ -1362,6 +1567,7 @@ function EquipoSection({ emps, onNavigate }) {
             return (
               <div
                 key={e.id}
+                className="ed-team-card"
                 onClick={() => onNavigate('empleados')}
                 style={{
                   padding: '20px 22px',
@@ -1375,17 +1581,7 @@ function EquipoSection({ emps, onNavigate }) {
                   position: 'relative',
                   overflow: 'hidden',
                   boxShadow: '0 10px 24px -14px oklch(20% 0.02 30 / 0.1)',
-                  transition: 'transform 220ms cubic-bezier(0.16, 1, 0.3, 1), boxShadow 220ms ease, borderColor 220ms ease',
-                }}
-                onMouseEnter={(el) => {
-                  el.currentTarget.style.transform = 'translateY(-6px)';
-                  el.currentTarget.style.boxShadow = '0 20px 40px -12px oklch(20% 0.02 30 / 0.18)';
-                  el.currentTarget.style.borderColor = 'oklch(75% 0.12 30 / 0.5)';
-                }}
-                onMouseLeave={(el) => {
-                  el.currentTarget.style.transform = 'translateY(0)';
-                  el.currentTarget.style.boxShadow = '0 10px 24px -14px oklch(20% 0.02 30 / 0.1)';
-                  el.currentTarget.style.borderColor = pal.line;
+                  transition: 'transform 220ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 220ms ease, border-color 220ms ease',
                 }}
               >
                 {/* Fila 1: Avatar con halo + Info del empleado */}
@@ -1501,12 +1697,23 @@ function buildTrendPath(barras, w, h) {
   return pts.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
 }
 
+/** "Ago 2026" o "Mar 2026 → Ago 2026", con los meses realmente graficados. */
+function rangoLabel(barras) {
+  const primera = barras[0];
+  const ultima = barras[barras.length - 1];
+  const etiqueta = (b) => `${b.m} ${b.anio}`;
+  return barras.length === 1 ? etiqueta(primera) : `${etiqueta(primera)} → ${etiqueta(ultima)}`;
+}
+
 function PulsoSection({ barras, distribucion, onNavigate }) {
   const [rango, setRango] = useState('12M');
   const [activeSeg, setActiveSeg] = useState(0);
 
   const numBarras = rango === '3M' ? 3 : rango === '6M' ? 6 : (barras || []).length;
   const barrasVisibles = (barras || []).slice(-numBarras);
+  // El titular seguía diciendo "Un año en un vistazo" incluso con el selector
+  // en 3M/6M, o con un solo mes real cerrado.
+  const tituloRango = rango === '3M' ? 'trimestre' : rango === '6M' ? 'semestre' : 'año';
 
   const w = 1000;
   const h = 200;
@@ -1536,7 +1743,7 @@ function PulsoSection({ barras, distribucion, onNavigate }) {
         <div>
           <div style={{ ...mono, marginBottom: 8 }}>Sección 04 · el pulso</div>
           <div style={{ fontSize: 44, lineHeight: 1, color: pal.ink, letterSpacing: '-0.01em', ...serif }}>
-            Un <em style={{ fontStyle: 'italic' }}>año</em> en un vistazo
+            Un <em style={{ fontStyle: 'italic' }}>{tituloRango}</em> en un vistazo
           </div>
         </div>
         <div style={{ height: 1, background: pal.line }} />
@@ -1575,8 +1782,13 @@ function PulsoSection({ barras, distribucion, onNavigate }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 22, flexWrap: 'wrap', gap: 12 }}>
             <div>
               <div style={{ fontSize: 22, color: pal.ink, ...serif }}>Costo laboral mensual</div>
+              {/* Rango real de la serie — antes eran dos años fijos ("2025 →
+                  2026") que no correspondían a los meses efectivamente
+                  mostrados. Sin meses todavía, lo dice en vez de inventarlos. */}
               <div style={{ fontSize: 12, color: pal.muted, marginTop: 2 }}>
-                {barrasVisibles[0]?.m || 'Sep'} 2025 → {barrasVisibles[barrasVisibles.length - 1]?.m || 'Ago'} 2026 · miles de colones
+                {barrasVisibles.length === 0
+                  ? 'Todavía no hay meses cerrados que graficar'
+                  : `${rangoLabel(barrasVisibles)} · colones`}
               </div>
             </div>
             {/* Leyenda de la gráfica */}
@@ -1789,8 +2001,8 @@ function PulsoSection({ barras, distribucion, onNavigate }) {
    Cierre editorial + footer + dock
    --------------------------------------------------------- */
 
-function Closing({ atender, totales, emps, onNavigate }) {
-  const prioridad = atender.find((o) => o.k === 'vencido') || atender.find((o) => o.k === 'proximo') || atender[0] || null;
+function Closing({ atender, totales, emps, onNavigate, onAtender }) {
+  const prioridad = prioridadReal(atender);
 
   return (
     <section style={{ padding: '0 56px 88px', position: 'relative' }}>
@@ -1844,7 +2056,7 @@ function Closing({ atender, totales, emps, onNavigate }) {
                 <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                   <button
                     type="button"
-                    onClick={() => onNavigate(prioridad.target)}
+                    onClick={() => onAtender(prioridad.target)}
                     style={{ padding: '14px 24px', background: pal.ink, color: pal.cream, border: 'none', borderRadius: 14, fontWeight: 600, fontSize: 14, cursor: 'pointer' }}
                   >
                     Ir a resolverlo
@@ -1929,7 +2141,7 @@ function EditorialFooter({ empresaNombre }) {
   );
 }
 
-function Dock({ onNavigate }) {
+function Dock({ onNavigate, onAtender, onAgregarEmpleado }) {
   return (
     <div style={{ position: 'sticky', bottom: 20, margin: '-36px auto 0', width: 'fit-content', display: 'flex', justifyContent: 'center', zIndex: 20 }}>
       <div
@@ -1947,17 +2159,20 @@ function Dock({ onNavigate }) {
       >
         <span style={{ ...mono, color: 'oklch(70% 0.02 60)', fontSize: 10 }}>Acciones rápidas</span>
         <span style={{ width: 1, height: 16, background: 'oklch(40% 0.02 30)', margin: '0 6px' }} />
-        <button type="button" onClick={() => onNavigate('ccss')} style={{ padding: '9px 16px', background: 'transparent', color: 'oklch(88% 0.03 60)', border: 'none', borderRadius: 999, fontSize: 12, cursor: 'pointer' }}>
+        <button type="button" onClick={() => onAtender('ccss')} style={{ padding: '9px 16px', background: 'transparent', color: 'oklch(88% 0.03 60)', border: 'none', borderRadius: 999, fontSize: 12, cursor: 'pointer' }}>
           CCSS
         </button>
         <button type="button" onClick={() => onNavigate('pagos')} style={{ padding: '9px 16px', background: 'transparent', color: 'oklch(88% 0.03 60)', border: 'none', borderRadius: 999, fontSize: 12, cursor: 'pointer' }}>
           Registrar pago
         </button>
-        <button type="button" onClick={() => onNavigate('empleados')} style={{ padding: '9px 16px', background: 'transparent', color: 'oklch(88% 0.03 60)', border: 'none', borderRadius: 999, fontSize: 12, cursor: 'pointer' }}>
+        {/* Antes solo navegaba a Equipo sin abrir el formulario — la acción
+            "rápida" no adelantaba nada. Ahora sí abre el modal real de alta
+            (mismo mecanismo que `onAbrirDossier` para CCSS/INS). */}
+        <button type="button" onClick={onAgregarEmpleado} style={{ padding: '9px 16px', background: 'transparent', color: 'oklch(88% 0.03 60)', border: 'none', borderRadius: 999, fontSize: 12, cursor: 'pointer' }}>
           Agregar empleado
         </button>
         <button type="button" onClick={() => onNavigate('planilla')} style={{ padding: '9px 16px', background: 'transparent', color: 'oklch(88% 0.03 60)', border: 'none', borderRadius: 999, fontSize: 12, cursor: 'pointer' }}>
-          Cerrar quincena
+          Ir a planilla
         </button>
         <button
           type="button"
@@ -1985,553 +2200,20 @@ const RAIL_SECTIONS = [
   { key: 'cierre', label: 'Cierre' },
 ];
 
-/** Sección activa + posición real de cada marcador, medidos sobre `#app-content` (el contenedor que realmente scrollea). */
-function Logo() {
-  return (
-    <svg width="34" height="34" viewBox="0 0 100 100" fill="none" style={{ display: 'block' }}>
-      {/* Crescent moon shape */}
-      <path
-        d="M50,15 A35,35 0 1,0 85,50 A26,26 0 1,1 50,15 Z"
-        fill="#1a1a24"
-      />
-      {/* Brown/gold leaf */}
-      <path
-        d="M48,40 C60,30 75,32 75,32 C75,32 72,48 60,55 C52,60 48,58 48,58 Z"
-        fill="#c49b76"
-      />
-      {/* Stem */}
-      <path
-        d="M48,58 Q44,64 42,70"
-        stroke="#1a1a24"
-        strokeWidth="3.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-function LotusFlower({ progress }) {
-  const petals = [
-    { aStart: 0, aEnd: 0, sStart: 0.9, sEnd: 1.15, opStart: 1.0, opEnd: 1.0 },        // Central
-    { aStart: -8, aEnd: -35, sStart: 0.85, sEnd: 1.05, opStart: 0.9, opEnd: 1.0 },     // Interno Izq
-    { aStart: 8, aEnd: 35, sStart: 0.85, sEnd: 1.05, opStart: 0.9, opEnd: 1.0 },       // Interno Der
-    { aStart: -16, aEnd: -65, sStart: 0.75, sEnd: 1.0, opStart: 0.8, opEnd: 1.0 },     // Medio Izq
-    { aStart: 16, aEnd: 65, sStart: 0.75, sEnd: 1.0, opStart: 0.8, opEnd: 1.0 },       // Medio Der
-    { aStart: -24, aEnd: -95, sStart: 0.65, sEnd: 0.95, opStart: 0.7, opEnd: 1.0 },     // Externo Izq
-    { aStart: 24, aEnd: 95, sStart: 0.65, sEnd: 0.95, opStart: 0.7, opEnd: 1.0 },       // Externo Der
-  ];
-
-  return (
-    <svg
-      width="100%"
-      height="100%"
-      viewBox="0 0 40 28"
-      style={{ overflow: 'visible' }}
-    >
-      <defs>
-        {/* Degradado suave durazno/coral para los pétalos del loto */}
-        <linearGradient id="ed-lotus-petal-grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#ffd8b3" />
-          <stop offset="100%" stopColor="#ff9a75" />
-        </linearGradient>
-      </defs>
-
-      {/* Pétalos del loto rotados alrededor de su punto base (20, 24) */}
-      {petals.map((p, idx) => {
-        const angle = p.aStart + progress * (p.aEnd - p.aStart);
-        const scale = p.sStart + progress * (p.sEnd - p.sStart);
-        const opacity = p.opStart + progress * (p.opEnd - p.opStart);
-        
-        return (
-          <path
-            key={idx}
-            d="M20,24 C15.5,17 15.5,9 20,4 C24.5,9 24.5,17 20,24 Z"
-            fill="url(#ed-lotus-petal-grad)"
-            stroke="#ffffff"
-            strokeWidth="0.5"
-            transform={`translate(20, 24) rotate(${angle}) scale(${scale}) translate(-20, -24)`}
-            opacity={opacity}
-          />
-        );
-      })}
-    </svg>
-  );
-}
-/** Sección activa + posición real de cada marcador, medidos sobre `#app-content` (el contenedor que realmente scrollea). */
-function useScrollRail(sectionRefs) {
-  const [activeKey, setActiveKey] = useState(RAIL_SECTIONS[0].key);
-  const [dotProgress, setDotProgress] = useState({});
-  const [scrollProgress, setScrollProgress] = useState(0);
-  const dotPositionsRef = useRef({});
-
-  useEffect(() => {
-    const scrollEl = document.getElementById('app-content');
-    if (!scrollEl) return undefined;
-
-    function scrollable() {
-      return Math.max(1, scrollEl.scrollHeight - scrollEl.clientHeight);
-    }
-
-    function measure() {
-      const total = scrollable();
-      const next = {};
-      RAIL_SECTIONS.forEach(({ key }) => {
-        const el = sectionRefs.current[key];
-        if (el) next[key] = Math.min(1, Math.max(0, el.offsetTop / total));
-      });
-      dotPositionsRef.current = next;
-      setDotProgress(next);
-    }
-
-    function update() {
-      const currentScroll = scrollEl.scrollTop;
-      const totalScroll = scrollable();
-      const pct = totalScroll > 0 ? Math.min(1, Math.max(0, currentScroll / totalScroll)) : 0;
-      setScrollProgress(pct);
-
-      // Usar las posiciones de marcadores cacheadas sin forzar reflows de offsetTop
-      const dotPositions = dotPositionsRef.current;
-      let closestKey = RAIL_SECTIONS[0].key;
-      let minDiff = Infinity;
-      RAIL_SECTIONS.forEach(({ key }) => {
-        const pos = dotPositions[key];
-        if (pos !== undefined) {
-          const diff = Math.abs(pos - pct);
-          if (diff < minDiff) {
-            minDiff = diff;
-            closestKey = key;
-          }
-        }
-      });
-      setActiveKey(closestKey);
-    }
-
-    measure();
-    update();
-
-    let raf = null;
-    function onScroll() {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        update();
-        raf = null;
-      });
-    }
-
-    scrollEl.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('resize', measure);
-    return () => {
-      scrollEl.removeEventListener('scroll', onScroll);
-      window.removeEventListener('resize', measure);
-      if (raf) cancelAnimationFrame(raf);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return { activeKey, dotProgress, scrollProgress };
-}
-
-/**
- * Hilo editorial vertical fijo a la izquierda — un filamento tenue con
- * "cuentas" (una por sección) y pequeñas puntadas decorativas entre ellas,
- * como un hilo cosido a mano. Solo la cuenta de la sección activa toma
- * color; el resto queda en gris casi invisible. No es navegación (no
- * reemplaza al masthead) ni un indicador de progreso aparte: es puramente
- * de orientación. Se oculta bajo 1180px junto con la nav del masthead.
- */
-function ScrollRail({ sectionRefs }) {
-  const { activeKey, dotProgress, scrollProgress } = useScrollRail(sectionRefs);
-  const [hoverKey, setHoverKey] = useState(null);
-  const [isDragging, setIsDragging] = useState(false);
-
-  const [isHandleHovered, setIsHandleHovered] = useState(false);
-
-  function goTo(key) {
-    const el = sectionRefs.current[key];
-    const scrollEl = document.getElementById('app-content');
-    if (!el || !scrollEl) return;
-    scrollEl.scrollTo({ top: Math.max(0, el.offsetTop - 24), behavior: reducedMotion() ? 'auto' : 'smooth' });
-  }
-
-  function handleMouseDown(e) {
-    setIsDragging(true);
-    e.preventDefault();
-  }
-
-  function handleRailClick(e) {
-    if (e.target.closest('button') || e.target.closest('svg') || e.target.tagName === 'BUTTON') return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickY = e.clientY - rect.top;
-    const pct = Math.min(1, Math.max(0, clickY / rect.height));
-    const scrollEl = document.getElementById('app-content');
-    if (scrollEl) {
-      scrollEl.scrollTo({
-        top: pct * (scrollEl.scrollHeight - scrollEl.clientHeight),
-        behavior: 'smooth',
-      });
-    }
-  }
-
-  useEffect(() => {
-    if (!isDragging) return;
-
-    let dragRaf = null;
-    function handleMouseMove(e) {
-      if (dragRaf) return;
-      dragRaf = requestAnimationFrame(() => {
-        dragRaf = null;
-        const railEl = document.querySelector('.ed-rail');
-        if (!railEl) return;
-        const rect = railEl.getBoundingClientRect();
-        const y = e.clientY - rect.top;
-        const pct = Math.min(1, Math.max(0, y / rect.height));
-        const scrollEl = document.getElementById('app-content');
-        if (scrollEl) {
-          scrollEl.scrollTop = pct * (scrollEl.scrollHeight - scrollEl.clientHeight);
-        }
-      });
-    }
-
-    function handleMouseUp() {
-      setIsDragging(false);
-    }
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-      if (dragRaf) cancelAnimationFrame(dragRaf);
-    };
-  }, [isDragging]);
-
-  const ordered = RAIL_SECTIONS.filter(({ key }) => dotProgress[key] !== undefined);
-  const lineCenter = 11.5;
-
-  // GPU Hardware-accelerated scale factor (0.85 -> 1.10 = 34px -> 44px)
-  const baseScale = 0.85 + scrollProgress * 0.25;
-  const currentScale = baseScale * (isHandleHovered ? 1.08 : 1);
-
-  return (
-    <div
-      className="ed-rail"
-      onClick={handleRailClick}
-      style={{
-        position: 'fixed',
-        left: 26,
-        top: 132,
-        bottom: 108,
-        width: 24,
-        zIndex: 15,
-        pointerEvents: 'auto',
-        cursor: 'pointer',
-      }}
-      aria-hidden="true"
-    >
-      {/* Logo al tope del rail */}
-      <div style={{ position: 'absolute', top: -56, left: lineCenter - 17, width: 34, height: 34, pointerEvents: 'auto' }}>
-        <Logo />
-      </div>
-
-      {/* SVG Container para la pista de enredadera de hojas verticales */}
-      <svg
-        style={{
-          position: 'absolute',
-          left: lineCenter - 6,
-          top: 0,
-          bottom: 0,
-          width: 12,
-          height: '100%',
-          overflow: 'visible',
-          zIndex: 0,
-        }}
-      >
-        <defs>
-          {/* Patrón de hojas en blanco puro para la máscara */}
-          <pattern id="ed-leaf-mask-pattern" width="12" height="24" patternUnits="userSpaceOnUse">
-            <path
-              d="M6,0 Q10,6 6,12 T6,24"
-              stroke="#ffffff"
-              strokeWidth="2.2"
-              fill="none"
-            />
-            <path
-              d="M6,0 Q2,6 6,12 T6,24"
-              stroke="#ffffff"
-              strokeWidth="2.2"
-              fill="none"
-            />
-          </pattern>
-
-          {/* Máscara basada en el patrón de hojas */}
-          <mask id="ed-leaf-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="12" height="100%">
-            <rect width="12" height="100%" fill="url(#ed-leaf-mask-pattern)" />
-          </mask>
-
-          {/* Patrón de fondo inactivo: cadena de hojas orgánicas tenues */}
-          <pattern id="ed-leaf-chain-bg" width="12" height="24" patternUnits="userSpaceOnUse">
-            <path
-              d="M6,0 Q10,6 6,12 T6,24"
-              stroke={pal.line}
-              strokeWidth="1.2"
-              fill="none"
-              opacity="0.8"
-            />
-            <path
-              d="M6,0 Q2,6 6,12 T6,24"
-              stroke={pal.line}
-              strokeWidth="1.2"
-              fill="none"
-              opacity="0.8"
-            />
-          </pattern>
-
-          {/* Degradado activo: transita de amarillo-oro arriba a un naranja vibrante e intenso abajo */}
-          <linearGradient id="ed-active-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#ffd885" stopOpacity="0.4" />
-            <stop offset="35%" stopColor="#ffb050" stopOpacity="0.75" />
-            <stop offset="70%" stopColor="#ff7038" stopOpacity="0.95" />
-            <stop offset="100%" stopColor="#ff451a" stopOpacity="1.0" />
-          </linearGradient>
-
-          {/* Recorte de progreso exacto alineado con el scroll */}
-          <clipPath id="ed-rail-clip">
-            <rect x="-10" y="0" width="32" height={`${scrollProgress * 100}%`} />
-          </clipPath>
-        </defs>
-
-        {/* 1. Cadena de hojas de fondo inactiva */}
-        <rect width="12" height="100%" fill="url(#ed-leaf-chain-bg)" />
-
-        {/* 2. Cadena de hojas activas: llena con el degradado continuo, enmascarada y recortada por el scrollProgress */}
-        <rect
-          width="12"
-          height="100%"
-          fill="url(#ed-active-grad)"
-          mask="url(#ed-leaf-mask)"
-          clipPath="url(#ed-rail-clip)"
-          style={{ filter: 'drop-shadow(0 0 4px #ff703860)' }}
-        />
-      </svg>
-
-      {/* Resplandor bioluminiscente dinámico centrado */}
-      <div
-        style={{
-          position: 'absolute',
-          left: lineCenter,
-          top: `${scrollProgress * 100}%`,
-          transform: `translate(-50%, -50%) scale(${currentScale})`,
-          width: 48,
-          height: 48,
-          borderRadius: 999,
-          background: `radial-gradient(circle, ${pal.gold} / 0.22, transparent 70%)`,
-          animation: 'ed-pulse-glow 2.5s ease-in-out infinite',
-          pointerEvents: 'none',
-          zIndex: 11,
-          willChange: 'transform',
-        }}
-      />
-
-      {/* Dije de Loto de Flor Damaris interactivo (Escalado 100% por GPU sin layout reflows) */}
-      <div
-        onMouseDown={handleMouseDown}
-        onMouseEnter={() => setIsHandleHovered(true)}
-        onMouseLeave={() => setIsHandleHovered(false)}
-        style={{
-          position: 'absolute',
-          left: lineCenter,
-          top: `${scrollProgress * 100}%`,
-          transform: `translate(-50%, -50%) scale(${currentScale})`,
-          width: 40,
-          height: 40,
-          borderRadius: 999,
-          background: 'rgba(255, 249, 242, 0.75)',
-          border: `1.2px solid ${isHandleHovered ? pal.coral : pal.gold}`,
-          boxShadow: isHandleHovered
-            ? '0 6px 20px -4px oklch(70% 0.16 30 / 0.35)'
-            : '0 4px 16px -4px oklch(75% 0.13 60 / 0.25)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'ns-resize',
-          pointerEvents: 'auto',
-          zIndex: 12,
-          willChange: 'transform, top',
-        }}
-      >
-        {/* Punto dorado flotante superior */}
-        <div
-          style={{
-            position: 'absolute',
-            top: '19%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            width: 4.2,
-            height: 4.2,
-            borderRadius: 999,
-            background: pal.gold,
-          }}
-        />
-
-        {/* Flor de Loto colocada y centrada verticalmente */}
-        <div
-          style={{
-            position: 'absolute',
-            top: '55%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            width: 35,
-            height: 26,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            overflow: 'visible',
-          }}
-        >
-          <LotusFlower progress={scrollProgress} />
-        </div>
-
-        {/* Aro decorativo colgante en la base inferior externa del dije */}
-        <div
-          style={{
-            position: 'absolute',
-            bottom: -8.5,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            width: 8,
-            height: 8,
-            borderRadius: 999,
-            border: `1.2px solid ${pal.gold}`,
-            background: pal.cream,
-            boxShadow: '0 2px 4px oklch(0% 0 0 / 0.05)',
-          }}
-        />
-      </div>
-
-      {ordered.map(({ key, label }, i) => {
-        const top = dotProgress[key];
-        const active = key === activeKey;
-        const passed = scrollProgress >= top;
-        const hovered = key === hoverKey;
-        const prev = ordered[i - 1];
-        const stitchTop = prev ? (dotProgress[prev.key] + top) / 2 : null;
-        const diamond = i % 2 === 1;
-
-        return (
-          <div key={key}>
-            {stitchTop !== null && (
-              <span
-                style={{
-                  position: 'absolute',
-                  left: lineCenter,
-                  top: `${stitchTop * 100}%`,
-                  transform: diamond ? 'translate(-50%, -50%) rotate(45deg)' : 'translate(-50%, -50%)',
-                  width: 5,
-                  height: 5,
-                  borderRadius: diamond ? 1 : 999,
-                  border: `1px solid ${pal.line2}`,
-                  opacity: 0.8,
-                  zIndex: 2,
-                }}
-              />
-            )}
-            <button
-              type="button"
-              onClick={() => goTo(key)}
-              onMouseEnter={() => setHoverKey(key)}
-              onMouseLeave={() => setHoverKey((k) => (k === key ? null : k))}
-              aria-label={`Ir a la sección ${label}`}
-              style={{
-                position: 'absolute',
-                left: lineCenter - 10,
-                top: `${top * 100}%`,
-                transform: 'translateY(-50%)',
-                width: 20,
-                height: 20,
-                padding: 0,
-                border: 'none',
-                background: 'transparent',
-                cursor: 'pointer',
-                pointerEvents: 'auto',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                zIndex: 3,
-              }}
-            >
-              <span
-                style={{
-                  width: active ? 8 : passed ? 7 : hovered ? 7 : 5,
-                  height: active ? 8 : passed ? 7 : hovered ? 7 : 5,
-                  borderRadius: 999,
-                  background: active ? pal.coral : passed ? pal.gold : hovered ? pal.muted2 : pal.line2,
-                  boxShadow: active
-                    ? `0 0 0 4px oklch(96% 0.015 60), 0 0 8px ${pal.coral}`
-                    : passed
-                      ? `0 0 0 2px oklch(96% 0.015 60)`
-                      : 'none',
-                  transition: 'all 200ms ease',
-                  animation: active ? 'ed-dot-glow 2.5s ease-in-out infinite' : undefined,
-                  flexShrink: 0,
-                }}
-              />
-            </button>
-            {/* Tooltip flotante al lado de las cuentas al hacer hover */}
-            {hovered && (
-              <span
-                style={{
-                  position: 'absolute',
-                  left: 28,
-                  top: `${top * 100}%`,
-                  transform: 'translateY(-50%)',
-                  background: pal.ink,
-                  color: pal.cream,
-                  padding: '4px 10px',
-                  borderRadius: 6,
-                  fontSize: 10,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.12em',
-                  whiteSpace: 'nowrap',
-                  boxShadow: '0 4px 12px oklch(0% 0 0 / 0.15)',
-                  zIndex: 20,
-                }}
-              >
-                {label}
-              </span>
-            )}
-          </div>
-        );
-      })}
-
-      {/* Terminal final del riel: un punto dorado elegante y minimalista */}
-      <div
-        style={{
-          position: 'absolute',
-          bottom: -56,
-          left: lineCenter,
-          transform: 'translateX(-50%)',
-          width: 8,
-          height: 8,
-          borderRadius: 999,
-          background: pal.gold,
-          border: `1.5px solid ${pal.cream}`,
-          boxShadow: `0 0 6px ${pal.gold}80`,
-          pointerEvents: 'none',
-        }}
-      />
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------
-   Composición
-   --------------------------------------------------------- */
-
-export default function Panel({ emps, totales, atender, distribucion, barras, periodoActivo, usuario, empresaNombre, poliza, onNavigate }) {
+export default function Panel({ emps, totales, atender, distribucion, barras, periodoActivo, usuario, empresaNombre, poliza, ccssCuota, notificaciones, onNotifClick, onNavigate, onAbrirDossier, onAgregarEmpleado, onSeleccionarEmpleado }) {
   const sectionRefs = useRef({});
   const setSectionRef = (key) => (el) => {
     sectionRefs.current[key] = el;
   };
+
+  /** "Resolver ahora"/"Ver detalle"/etc.: si el destino es CCSS o INS, se abre
+   *  directamente el dossier correspondiente dentro de Obligaciones — no las
+   *  pantallas viejas standalone (mismo criterio que `handleAtender` en
+   *  Calendario.jsx, 'ccss'/'ins' son también claves de rutas viejas). */
+  function handleAtender(target) {
+    if (target === 'ccss' || target === 'ins') onAbrirDossier(target);
+    else onNavigate(target);
+  }
 
   return (
     <div
@@ -2543,10 +2225,19 @@ export default function Panel({ emps, totales, atender, distribucion, barras, pe
         minHeight: '100%',
       }}
     >
-      <ScrollRail sectionRefs={sectionRefs} />
+      <ScrollRail sectionRefs={sectionRefs} sections={RAIL_SECTIONS} />
 
       <div style={{ maxWidth: 1440, margin: '0 auto', position: 'relative' }}>
-        <Masthead usuario={usuario} periodoActivo={periodoActivo} atender={atender} onNavigate={onNavigate} />
+        <Masthead
+          usuario={usuario}
+          periodoActivo={periodoActivo}
+          atender={atender}
+          emps={emps}
+          notificaciones={notificaciones}
+          onNotifClick={onNotifClick}
+          onNavigate={onNavigate}
+          onSeleccionarEmpleado={onSeleccionarEmpleado}
+        />
         <div id="ed-sec-hero" ref={setSectionRef('hero')}>
           <Hero usuario={usuario} totales={totales} atender={atender} periodoActivo={periodoActivo} onNavigate={onNavigate} />
         </div>
@@ -2562,7 +2253,7 @@ export default function Panel({ emps, totales, atender, distribucion, barras, pe
         </div>
         <div id="ed-sec-atender" ref={setSectionRef('atender')}>
           <Reveal>
-            <AtenderSection atender={atender} emps={emps} poliza={poliza} onNavigate={onNavigate} />
+            <AtenderSection atender={atender} emps={emps} poliza={poliza} ccssCuota={ccssCuota} onNavigate={onNavigate} onAtender={handleAtender} />
           </Reveal>
         </div>
         <div id="ed-sec-equipo" ref={setSectionRef('equipo')}>
@@ -2572,17 +2263,17 @@ export default function Panel({ emps, totales, atender, distribucion, barras, pe
         </div>
         <div id="ed-sec-pulso" ref={setSectionRef('pulso')}>
           <Reveal>
-            <PulsoSection barras={barras} distribucion={distribucion} />
+            <PulsoSection barras={barras} distribucion={distribucion} onNavigate={onNavigate} />
           </Reveal>
         </div>
         <div id="ed-sec-cierre" ref={setSectionRef('cierre')}>
           <Reveal>
-            <Closing atender={atender} totales={totales} emps={emps} onNavigate={onNavigate} />
+            <Closing atender={atender} totales={totales} emps={emps} onNavigate={onNavigate} onAtender={handleAtender} />
           </Reveal>
           <EditorialFooter empresaNombre={empresaNombre} />
         </div>
       </div>
-      <Dock onNavigate={onNavigate} />
+      <Dock onNavigate={onNavigate} onAtender={handleAtender} onAgregarEmpleado={onAgregarEmpleado} />
     </div>
   );
 }

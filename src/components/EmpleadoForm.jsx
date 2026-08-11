@@ -13,7 +13,21 @@ const VACIO = {
   tipo: 'Tiempo completo',
   salario: '',
   ingreso: '',
+  // Dos campos que la ficha del empleado ya mostraba en pantalla ("Nacimiento",
+  // "Contacto de emergencia") como "No registrado en el sistema", sin ningún
+  // formulario donde llenarlos. Son opcionales: vacíos siguen mostrando ese
+  // mismo texto honesto.
+  nacimiento: '',
+  emergencia: '',
 };
+
+// Mismo formato que ya parsean el resto de las pantallas ("12 mar 2021") —
+// nunca texto libre. Antes solo se exigía que no estuviera vacío, así que
+// un valor como "no-es-una-fecha" se guardaba tal cual y desaparecía en
+// silencio de cualquier cálculo que sí supiera leer una fecha real
+// (antigüedad, aniversarios…) sin que la persona siguiera existiendo en el
+// resto de la app (auditoría F7).
+const INGRESO_RE = /^\d{1,2}\s+(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s+\d{4}$/i;
 
 function validar(datos) {
   const errores = {};
@@ -25,6 +39,12 @@ function validar(datos) {
   const salarioNum = Number(datos.salario);
   if (!datos.salario || Number.isNaN(salarioNum) || salarioNum <= 0) errores.salario = 'Ingresa un salario mensual válido.';
   if (!datos.ingreso.trim()) errores.ingreso = 'Ingresa la fecha de ingreso (ej. 12 mar 2021).';
+  else if (!INGRESO_RE.test(datos.ingreso.trim())) errores.ingreso = 'Formato de fecha inválido — usa día, mes abreviado y año (ej. 12 mar 2021).';
+  // Opcional, pero si se llena tiene que ser una fecha que el resto de la app
+  // sepa leer — el mismo formato que `ingreso`.
+  if (datos.nacimiento.trim() && !INGRESO_RE.test(datos.nacimiento.trim())) {
+    errores.nacimiento = 'Formato de fecha inválido — usa día, mes abreviado y año (ej. 04 jul 1992).';
+  }
   return errores;
 }
 
@@ -50,7 +70,12 @@ export default function EmpleadoForm({ inicial, onSubmit, onCancel }) {
     const err = validar(datos);
     setErrores(err);
     if (Object.keys(err).length > 0) return;
-    onSubmit({ ...datos, salario: Number(datos.salario) });
+    onSubmit({
+      ...datos,
+      salario: Number(datos.salario),
+      nacimiento: datos.nacimiento.trim(),
+      emergencia: datos.emergencia.trim(),
+    });
   }
 
   return (
@@ -102,6 +127,14 @@ export default function EmpleadoForm({ inicial, onSubmit, onCancel }) {
             <Input id="ef-banco" value={datos.banco} onChange={(e) => set('banco', e.target.value)} placeholder="BAC · Cuenta planilla" />
           </Field>
         </div>
+
+        <Field label="Fecha de nacimiento" help="Opcional." error={errores.nacimiento} htmlFor="ef-nacimiento">
+          <Input id="ef-nacimiento" value={datos.nacimiento} onChange={(e) => set('nacimiento', e.target.value)} placeholder="04 jul 1992" />
+        </Field>
+
+        <Field label="Contacto de emergencia" help="Opcional." htmlFor="ef-emergencia">
+          <Input id="ef-emergencia" value={datos.emergencia} onChange={(e) => set('emergencia', e.target.value)} placeholder="María Soto · 8712-4590" />
+        </Field>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 22, paddingTop: 16, borderTop: `1px solid ${color.borderSoft}` }}>

@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { HOY } from '../data/mock.js';
-import { money } from '../lib/format.js';
-import { IconSearch, IconCampana, IconCheck, IconChevronDown, IconChevronRight } from '../components/ui/Icons.jsx';
-import { ConfirmDialog } from '../components/ui/Modal.jsx';
+import { money, fechaISO } from '../lib/format.js';
+import { sugerirMetodoPago } from '../lib/payroll.js';
+import { descargarCsv } from '../lib/export.js';
+import { IconSearch, IconCheck, IconChevronDown, IconChevronRight } from '../components/ui/Icons.jsx';
+import { Modal, ConfirmDialog } from '../components/ui/Modal.jsx';
+import { NotificacionesPanel } from '../components/ui/NotificacionesPanel.jsx';
+import ScrollRail from '../components/ScrollRail.jsx';
 
 /**
  * Planilla — herramienta editorial de cierre de quincena. Mismo lenguaje
@@ -47,6 +51,42 @@ const mono = {
 
 const reducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Guarda para los `onMouseEnter`/`onMouseLeave` que mutan `style` directo:
+// en touch, un tap dispara `mouseenter` sin el `mouseleave` correspondiente
+// y el elemento queda con el efecto "pegado" hasta el próximo tap en otro
+// lado (revisión de motion). Sin esto no hay forma de gatear ese JS como sí
+// se gatea un `:hover` de CSS con `@media (hover: hover)`.
+const hoverFino = () =>
+  typeof window !== 'undefined' && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+
+/**
+ * Movimientos reales de la quincena (horas extra / bono / deducción por
+ * empleado) — una fila por tipo con monto acumulado > 0. Única fuente del
+ * "cuántos ajustes/movimientos" en toda la pantalla: antes cada sección
+ * contaba distinto (personas con `tieneAjuste` vs. filas de este rail), así
+ * que la misma quincena se describía como "1 movimiento" en una parte y "3
+ * movimientos firmados" en otra (auditoría F16). No hay fechas exactas por
+ * movimiento individual en los datos — se muestran agrupados por tipo, sin
+ * inventar horas o firmas que no existen.
+ */
+function buildMovimientosRail(emps) {
+  const list = [];
+  emps.forEach((e) => {
+    if (e.horasExtra > 0) {
+      // Monto y factor reales de Configuración (ver `buildEmpleados`) — antes
+      // se recalculaba acá con 240h y 1.5× fijos.
+      list.push({ id: `${e.id}-he`, e, tipo: 'Horas extras', signo: 1, monto: e.montoHorasExtra, desc: `${e.horasExtra}h extra a ${e.factorHoraExtra}× esta quincena.` });
+    }
+    if (e.bono > 0) {
+      list.push({ id: `${e.id}-bono`, e, tipo: 'Bono', signo: 1, monto: e.bono, desc: 'Bono puntual de la quincena.' });
+    }
+    if (e.deduccionPuntual > 0) {
+      list.push({ id: `${e.id}-ded`, e, tipo: 'Deducción', signo: -1, monto: e.deduccionPuntual, desc: 'Deducción puntual de la quincena.' });
+    }
+  });
+  return list;
+}
 
 /** Cuenta hacia el valor real al montar/cambiar — mismo mecanismo que el resto de la app. */
 function useCountUp(target, { duration = 900, format = (n) => String(Math.round(n)) } = {}) {
@@ -121,38 +161,48 @@ const NAV_ITEMS = [
    Exportar CSV — misma lógica que ya existía
    --------------------------------------------------------- */
 
-function descargarCsv(vista) {
+function exportarPlanillaCsv(vista) {
+  // "Deducción CCSS" es solo la CCSS obrera (`e.ded`) — antes esta columna
+  // se calculaba como `brutoQ - neto`, que en realidad incluye también la
+  // deducción puntual (adelantos, préstamos) si la persona tenía una esa
+  // quincena, así que un adelanto se reportaba como si fuera CCSS. Ahora
+  // cada deducción real tiene su propia columna, y "Salario neto" sigue
+  // reconciliando: bruto − CCSS − deducción puntual.
+  const totalDeduccionPuntual = vista.emps.reduce((a, e) => a + (e.deduccionPuntual || 0), 0);
   const filas = [
-    ['Empleado', 'Puesto', 'Salario bruto', 'Deducción CCSS', 'Salario neto', 'Cargas patronales', 'Costo total'],
+    [
+      'Empleado', 'Puesto', 'Salario bruto', 'Deducción CCSS', 'Deducción puntual', 'Salario neto', 'Cargas patronales', 'Costo total',
+      'Estado de pago', 'Fecha de pago', 'Método', 'Referencia bancaria', 'Comisión bancaria', 'Conciliado', 'Fecha de conciliación',
+    ],
     ...vista.emps.map((e) => [
       e.nombre,
       e.puesto,
       e.brutoQ.toFixed(0),
-      (e.brutoQ - e.neto).toFixed(0),
+      e.ded.toFixed(0),
+      (e.deduccionPuntual || 0).toFixed(0),
       e.neto.toFixed(0),
-      (e.costoQ - e.brutoQ).toFixed(0),
+      e.car.toFixed(0),
       e.costoQ.toFixed(0),
+      e.pago === 'pagado' ? 'Pagado' : 'Pendiente',
+      e.fechaPago && e.fechaPago !== '—' ? e.fechaPago : '',
+      e.metodo && e.metodo !== '—' ? e.metodo : '',
+      e.referenciaPago && e.referenciaPago !== '—' ? e.referenciaPago : '',
+      e.comisionPago ? e.comisionPago.toFixed(0) : '',
+      e.conciliado ? 'Sí' : 'No',
+      e.conciliado && e.conciliadoFecha !== '—' ? e.conciliadoFecha : '',
     ]),
     [
       'Totales',
       '',
       vista.totales.sumBruto.toFixed(0),
       vista.totales.totDed.toFixed(0),
+      totalDeduccionPuntual.toFixed(0),
       vista.totales.sumNeto.toFixed(0),
       vista.totales.totCar.toFixed(0),
       vista.totales.totCosto.toFixed(0),
     ],
   ];
-  const csv = filas.map((f) => f.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-  const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `planilla-${vista.periodo.id}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  descargarCsv(`planilla-${vista.periodo.id}`, filas);
 }
 
 /* ---------------------------------------------------------
@@ -177,6 +227,22 @@ function PeriodoDropdown({ periodos, periodoMostrado, periodoActivoId, onSelecci
       document.removeEventListener('mousedown', onDocClick);
       document.removeEventListener('keydown', onKey);
     };
+  }, [open]);
+
+  // Mismo patrón que `Modal.jsx`: entra animado pero antes desaparecía de
+  // golpe al cerrar — se mantiene montado un instante más para que la
+  // salida también anime (revisión de motion).
+  const [rendered, setRendered] = useState(false);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setRendered(true);
+      const raf = requestAnimationFrame(() => setVisible(true));
+      return () => cancelAnimationFrame(raf);
+    }
+    setVisible(false);
+    const t = setTimeout(() => setRendered(false), 160);
+    return () => clearTimeout(t);
   }, [open]);
 
   return (
@@ -207,9 +273,10 @@ function PeriodoDropdown({ periodos, periodoMostrado, periodoActivoId, onSelecci
         <IconChevronDown size={11} stroke="currentColor" />
       </button>
 
-      {open && (
+      {rendered && (
         <div
           role="listbox"
+          className={`ed-pop-in${visible ? ' ed-pop-in--visible' : ''}`}
           style={{
             position: 'absolute',
             top: 'calc(100% + 8px)',
@@ -222,6 +289,7 @@ function PeriodoDropdown({ periodos, periodoMostrado, periodoActivoId, onSelecci
             borderRadius: 14,
             boxShadow: '0 24px 48px -18px oklch(20% 0.02 30 / 0.28)',
             zIndex: 50,
+            transformOrigin: 'top left',
           }}
         >
           {periodos.map((p) => {
@@ -267,7 +335,7 @@ function PeriodoDropdown({ periodos, periodoMostrado, periodoActivoId, onSelecci
   );
 }
 
-function Masthead({ periodos, periodoMostrado, periodoActivoId, onSeleccionarPeriodo, onNavigate, atender }) {
+function Masthead({ periodos, periodoMostrado, periodoActivoId, onSeleccionarPeriodo, onNavigate, atender, busqueda, onBusquedaChange, notificaciones, onNotifClick }) {
   return (
     <>
       <header
@@ -335,7 +403,9 @@ function Masthead({ periodos, periodoMostrado, periodoActivoId, onSeleccionarPer
         </nav>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10 }}>
-          <div
+          {/* Buscador real sobre el índice del taller (nombre, puesto o
+              cédula). Antes era un div decorativo con `cursor: not-allowed`. */}
+          <label
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -350,45 +420,16 @@ function Masthead({ periodos, periodoMostrado, periodoActivoId, onSeleccionarPer
             }}
           >
             <IconSearch size={13} stroke="currentColor" />
-            <span style={{ flex: 1 }}>
-              Buscar empleado o ajuste
-              <span
-                style={{
-                  display: 'inline-block',
-                  width: 1.5,
-                  height: 11,
-                  background: pal.coral,
-                  marginLeft: 2,
-                  verticalAlign: 'middle',
-                  animation: 'ed-cursor-blink 1.1s step-end infinite',
-                }}
-              />
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => onNavigate('calendario')}
-            aria-label="Ver obligaciones pendientes"
-            style={{
-              width: 36,
-              height: 36,
-              border: `1px solid ${pal.line}`,
-              background: pal.cream2,
-              borderRadius: 999,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              position: 'relative',
-            }}
-          >
-            <IconCampana size={14} stroke="oklch(30% 0.02 40)" />
-            {atender && atender.length > 0 && (
-              <span style={{ position: 'absolute', top: 7, right: 7 }}>
-                <Dot c={pal.coral} glow size={7} />
-              </span>
-            )}
-          </button>
+            <input
+              type="search"
+              value={busqueda}
+              onChange={(ev) => onBusquedaChange(ev.target.value)}
+              placeholder="Buscar empleado"
+              aria-label="Buscar empleado en la planilla"
+              style={{ flex: 1, minWidth: 0, border: 'none', background: 'transparent', outline: 'none', font: 'inherit', color: pal.ink }}
+            />
+          </label>
+          <NotificacionesPanel notificaciones={notificaciones} onNotifClick={onNotifClick} />
         </div>
       </header>
     </>
@@ -403,7 +444,9 @@ function Masthead({ periodos, periodoMostrado, periodoActivoId, onSeleccionarPer
 function StatusBar({ emps, readOnly }) {
   const pagados = emps.filter((e) => e.pago === 'pagado').length;
   const pendientes = emps.length - pagados;
-  const ajustes = emps.filter((e) => e.tieneAjuste).length;
+  // Cuenta real de movimientos firmados (ver `buildMovimientosRail`), no de
+  // personas — "N ajustes firmados" debe coincidir con el rail de abajo.
+  const ajustes = buildMovimientosRail(emps).length;
 
   return (
     <div
@@ -543,28 +586,34 @@ function OndaInstrumento({ periodo, periodoTipo, atender }) {
 
   const vencidoDia = diaDe((atender || []).find((o) => o.k === 'vencido')?.fecha);
   const proximoDia = diaDe((atender || []).find((o) => o.k === 'proximo')?.fecha);
+  // HOY es una fecha simulada fija (mock.js) — al cerrar quincenas el
+  // período activo avanza, pero HOY no. Si el período activo ya no incluye
+  // ese día (p. ej. quincena 16–31 mientras HOY sigue en el 09), el marcador
+  // "HOY" no tiene un lugar real en esta onda — mostrarlo en un slot fijo de
+  // todas formas lo dejaba flotando fuera de orden (auditoría F12).
+  const hoyEnRango = HOY.dia >= inicioDia && HOY.dia <= finDia;
 
-  // 5 "movimientos": apertura, un evento temprano, hoy, un evento tardío, cierre.
+  // 5 "movimientos": apertura, un evento temprano, hoy (si aplica), un evento tardío, cierre.
   const movs = [
-    { dia: inicioDia, x: 20, y: 130, r: 4, c: 'oklch(70% 0.15 320)', label: String(inicioDia).padStart(2, '0') },
+    { dia: inicioDia, x: 30, y: 110, r: 4, c: 'oklch(70% 0.15 320)', label: String(inicioDia).padStart(2, '0') },
     {
       dia: vencidoDia && vencidoDia >= inicioDia && vencidoDia <= finDia ? vencidoDia : Math.round(inicioDia + (finDia - inicioDia) * 0.27),
-      x: 130,
-      y: 98,
+      x: 135,
+      y: 80,
       r: 5,
       c: pal.coral,
       label: null,
     },
-    { dia: HOY.dia, x: 288, y: 90, r: 10, c: pal.ink, label: null, hoy: true },
+    { dia: HOY.dia, x: 260, y: 75, r: 10, c: pal.ink, label: null, hoy: true, visible: hoyEnRango },
     {
       dia: proximoDia && proximoDia >= inicioDia && proximoDia <= finDia ? proximoDia : Math.round(inicioDia + (finDia - inicioDia) * 0.73),
-      x: 360,
-      y: 63,
+      x: 375,
+      y: 50,
       r: 4,
       c: pal.sage,
       label: null,
     },
-    { dia: finDia, x: 436, y: 90, r: 4, c: 'oklch(70% 0.09 320)', label: String(finDia).padStart(2, '0') },
+    { dia: finDia, x: 450, y: 75, r: 4, c: 'oklch(70% 0.09 320)', label: String(finDia).padStart(2, '0') },
   ];
   movs[1].label = String(movs[1].dia).padStart(2, '0');
   movs[3].label = String(movs[3].dia).padStart(2, '0');
@@ -573,18 +622,21 @@ function OndaInstrumento({ periodo, periodoTipo, atender }) {
     <div
       style={{
         position: 'relative',
-        padding: '22px 24px 20px',
-        background: 'oklch(99% 0.006 70 / 0.55)',
-        border: '1px solid oklch(88% 0.02 55 / 0.55)',
+        width: 395,
+        padding: '24px 24px 20px',
+        background: 'rgba(255, 253, 249, 0.98)',
+        border: `1px solid ${pal.line2}`,
         borderRadius: 24,
+        boxShadow: '0 20px 50px -16px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.02)',
         animation: 'ed-float-slow 6s ease-in-out infinite',
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-        <span style={mono}>La quincena, en cinco movimientos</span>
-        <span style={{ ...mono, color: pal.coral }}>Hoy · {String(HOY.dia).padStart(2, '0')}</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ ...mono, fontSize: 9, letterSpacing: '0.08em' }}>LA QUINCENA, EN CINCO MOVIMIENTOS</span>
+        <span style={{ ...mono, fontSize: 9.5, color: pal.coral, fontWeight: 700 }}>HOY · {String(HOY.dia).padStart(2, '0')}</span>
       </div>
-      <svg viewBox="0 0 480 200" width="100%" height={200} style={{ display: 'block' }}>
+
+      <svg viewBox="0 0 480 145" width="100%" height={145} style={{ display: 'block' }}>
         <defs>
           <linearGradient id="ep-wave-fill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0" stopColor="oklch(78% 0.16 25)" stopOpacity="0.28" />
@@ -598,11 +650,11 @@ function OndaInstrumento({ periodo, periodoTipo, atender }) {
         </defs>
         <g style={{ animation: 'ed-wave-drift 7s ease-in-out infinite alternate' }}>
           <path
-            d="M20,130 Q60,120 96,110 T172,80 T244,70 T288,90 T360,60 T436,90 T460,110 L460,180 L20,180 Z"
+            d="M20,110 Q60,100 96,90 T172,65 T244,55 T288,75 T360,45 T436,75 T460,95 L460,135 L20,135 Z"
             fill="url(#ep-wave-fill)"
           />
           <path
-            d="M20,130 Q60,120 96,110 T172,80 T244,70 T288,90 T360,60 T436,90 T460,110"
+            d="M20,110 Q60,100 96,90 T172,65 T244,55 T288,75 T360,45 T436,75 T460,95"
             stroke="url(#ep-wave-line)"
             strokeWidth="2.2"
             fill="none"
@@ -611,8 +663,9 @@ function OndaInstrumento({ periodo, periodoTipo, atender }) {
           />
         </g>
 
-        {movs.map((m) =>
-          m.hoy ? (
+        {movs.map((m) => {
+          if (m.visible === false) return null;
+          return m.hoy ? (
             <g key="hoy">
               <circle cx={m.x} cy={m.y} r={10} fill={pal.ink} />
               <circle
@@ -626,21 +679,27 @@ function OndaInstrumento({ periodo, periodoTipo, atender }) {
             </g>
           ) : (
             <circle key={m.x} cx={m.x} cy={m.y} r={m.r} fill={m.c} />
-          ),
-        )}
+          );
+        })}
 
-        <g fontFamily="JetBrains Mono, monospace" fontSize="9" fill="oklch(45% 0.02 40)">
-          <text x={movs[0].x} y={196}>{movs[0].label}</text>
-          <text x={movs[1].x - 15} y={196}>{movs[1].label}</text>
-          <text x={movs[3].x - 5} y={196}>{movs[3].label}</text>
-          <text x={movs[2].x - 10} y={196} fill={pal.ink} fontWeight="600">
-            {String(HOY.dia).padStart(2, '0')}·HOY
-          </text>
-          <text x={movs[4].x - 5} y={196}>{movs[4].label}</text>
+        <g fontFamily="JetBrains Mono, monospace" fontSize="9.5" fill="oklch(45% 0.02 40)">
+          <text x={movs[0].x - 6} y={142}>{movs[0].label}</text>
+          <text x={movs[1].x - 8} y={142}>{movs[1].label}</text>
+          {hoyEnRango && (
+            <text x={movs[2].x - 18} y={142} fill={pal.ink} fontWeight="700">
+              {String(HOY.dia).padStart(2, '0')}·HOY
+            </text>
+          )}
+          <text x={movs[3].x - 6} y={142}>{movs[3].label}</text>
+          <text x={movs[4].x - 6} y={142}>{movs[4].label}</text>
         </g>
       </svg>
-      <div style={{ fontStyle: 'italic', fontSize: 14, color: 'oklch(40% 0.03 30)', marginTop: 4, textAlign: 'right', ...serif }}>
-        cinco movimientos en {finDia - inicioDia + 1} días trabajados
+
+      <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px dashed ${pal.line2}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ ...mono, fontSize: 8.5, color: pal.muted }}>PERÍODO EN COMPOSICIÓN</span>
+        <div style={{ fontStyle: 'italic', fontSize: 13, color: 'oklch(40% 0.03 30)', ...serif }}>
+          cinco movimientos en {finDia - inicioDia + 1} días trabajados
+        </div>
       </div>
     </div>
   );
@@ -649,16 +708,17 @@ function OndaInstrumento({ periodo, periodoTipo, atender }) {
 function Seccion01Hero({ periodo, periodoTipo, readOnly, emps, atender, onExportar, onAbrirCerrar, onVolverActivo, onIrAlEquipo }) {
   const pendientes = emps.filter((e) => e.pago !== 'pagado');
   const pagados = emps.length - pendientes.length;
-  const ajustes = emps.filter((e) => e.tieneAjuste).length;
+  // Misma fuente que el rail de ajustes (§ 04) — ver `buildMovimientosRail`.
+  const ajustes = buildMovimientosRail(emps).length;
   const primerPendiente = pendientes[0];
   const primerNombre = primerPendiente ? primerPendiente.nombre.split(' ')[0] : null;
   const mesLabel = (periodo.mes || '').split(' ')[0].toLowerCase();
 
   return (
-    <section style={{ position: 'relative', padding: '68px 56px 44px', overflow: 'hidden' }}>
+    <section style={{ position: 'relative', padding: '44px 56px 44px', overflow: 'hidden' }}>
       <LandscapeHero />
 
-      <div className="ed-grid-hero" style={{ position: 'relative', display: 'grid', gridTemplateColumns: '7fr 5fr', gap: 56, alignItems: 'end' }}>
+      <div className="ed-grid-hero" style={{ position: 'relative', display: 'grid', gridTemplateColumns: '1fr 395px', gap: 44, alignItems: 'center' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 22, flexWrap: 'wrap' }}>
             <span style={{ width: 32, height: 1, background: pal.ink }} />
@@ -1002,8 +1062,17 @@ function PulsoAjustes({ periodo, periodoTipo, emps, ajustes, netoAjustes }) {
 }
 
 function EstadoBand({ totales, emps, periodo, periodoTipo, barras }) {
-  const ajustes = emps.filter((e) => e.tieneAjuste).length;
-  const netoAjustes = emps.reduce((acc, e) => (e.tieneAjuste ? acc + (e.brutoQ - e.salario / 2) : acc), 0);
+  // Misma fuente que el rail de ajustes (§ 04) — ver `buildMovimientosRail`.
+  const ajustes = buildMovimientosRail(emps).length;
+  // Efecto neto REAL de los ajustes sobre lo que la persona recibe: horas
+  // extra + bono, MENOS la deducción puntual. Antes se llamaba "netos" pero
+  // solo sumaba `brutoQ - salario/2` (horas extra + bono), ignorando
+  // cualquier deducción registrada — "netos" mostraba en realidad el bruto
+  // de los ajustes (auditoría F17).
+  const netoAjustes = emps.reduce((acc, e) => {
+    const montoHorasExtra = e.montoHorasExtra || 0;
+    return acc + montoHorasExtra + (e.bono || 0) - (e.deduccionPuntual || 0);
+  }, 0);
 
   const inicioDia = periodoTipo === 'mensual' ? 1 : periodo.mitad === 'b' ? 16 : 1;
   const finDia =
@@ -1086,9 +1155,99 @@ function MiniNumberField({ label, help, value, onChange }) {
   );
 }
 
-/** "09 ago 2026" — mismo formato corto que ya usan fechaPago/ingreso en mock.js. */
-function fechaCorta(hoy) {
-  return `${String(hoy.dia).padStart(2, '0')} ${MESES_LARGO[hoy.mesIndice].slice(0, 3)} ${hoy.anio}`;
+/* ---------------------------------------------------------
+   Modal de pago — mismo flujo real que Pagos.jsx: método de pago real
+   (nunca la cuenta bancaria del empleado) y la misma fecha "hoy" de la
+   app (`fechaISO(HOY)`). Antes este botón pagaba directo con
+   `metodo: e.banco`, mezclando la cuenta del empleado con el método.
+   --------------------------------------------------------- */
+const HOY_ISO = fechaISO(HOY);
+
+/**
+ * Métodos de pago disponibles: los que estén configurados en Configuración →
+ * "Métodos de pago". Antes era una constante fija dentro de este archivo (y
+ * otra idéntica dentro de Pagos.jsx), así que la interfaz ofrecía cuatro
+ * opciones que no se podían cambiar desde ningún lado.
+ */
+function listaMetodos(metodos) {
+  return Array.isArray(metodos) && metodos.length > 0 ? metodos : ['Transferencia'];
+}
+
+function PagoModal({ open, sugerido, metodos, onClose, onConfirmar }) {
+  const METODOS_PAGO = listaMetodos(metodos);
+  const [metodo, setMetodo] = useState(sugerido || METODOS_PAGO[0]);
+  const [fecha, setFecha] = useState(HOY_ISO);
+  // Fase 10 — registro financiero manual: referencia y comisión son
+  // opcionales (no todo pago trae una, y no todo canal cobra comisión), pero
+  // antes no existía ningún campo para dejarlas anotadas.
+  const [referencia, setReferencia] = useState('');
+  const [comision, setComision] = useState('');
+
+  useEffect(() => {
+    if (open) {
+      setMetodo(sugerido || METODOS_PAGO[0]);
+      setFecha(HOY_ISO);
+      setReferencia('');
+      setComision('');
+    }
+    // `METODOS_PAGO` se recalcula en cada render pero su contenido solo cambia
+    // cuando cambia la configuración, que ya llega por `sugerido`/`metodos`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, sugerido]);
+
+  // Nunca una fecha futura ni vacía — un pago no puede haber ocurrido
+  // "mañana" (auditoría F5).
+  const fechaInvalida = !fecha || fecha > HOY_ISO;
+  const comisionNum = comision.trim() === '' ? 0 : Number(comision);
+  const comisionInvalida = comision.trim() !== '' && (Number.isNaN(comisionNum) || comisionNum < 0);
+
+  const campoStyle = { padding: '9px 12px', borderRadius: 10, border: `1px solid ${pal.line}`, background: pal.surface, fontSize: 14, fontFamily: 'inherit', color: pal.ink };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Marcar como pagada" width={380}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ ...mono, fontSize: 9 }}>Método de pago</span>
+          <select value={metodo} onChange={(ev) => setMetodo(ev.target.value)} style={campoStyle}>
+            {METODOS_PAGO.map((m) => (
+              <option key={m}>{m}</option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ ...mono, fontSize: 9 }}>Fecha de pago</span>
+          <input type="date" value={fecha} max={HOY_ISO} onChange={(ev) => setFecha(ev.target.value)} style={campoStyle} />
+          {fechaInvalida && <span style={{ fontSize: 10.5, color: 'oklch(50% 0.15 25)' }}>La fecha no puede ser futura ni estar vacía.</span>}
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ ...mono, fontSize: 9 }}>Referencia bancaria (opcional)</span>
+          <input type="text" value={referencia} onChange={(ev) => setReferencia(ev.target.value)} placeholder="Ej. 000123456" style={campoStyle} />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ ...mono, fontSize: 9 }}>Comisión bancaria ₡ (si corresponde)</span>
+          <input type="number" min="0" step="1" value={comision} onChange={(ev) => setComision(ev.target.value)} placeholder="0" style={campoStyle} />
+          {comisionInvalida && <span style={{ fontSize: 10.5, color: 'oklch(50% 0.15 25)' }}>Ingresá un monto válido.</span>}
+        </label>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
+          <button type="button" onClick={onClose} style={{ padding: '10px 16px', background: 'transparent', color: pal.muted, border: `1px solid ${pal.line}`, borderRadius: 10, fontSize: 12, cursor: 'pointer' }}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={fechaInvalida || comisionInvalida}
+            onClick={() => {
+              if (fechaInvalida || comisionInvalida) return;
+              const fechaFmt = new Date(fecha + 'T00:00:00').toLocaleDateString('es-CR', { day: '2-digit', month: 'short', year: 'numeric' });
+              onConfirmar({ metodo, fecha: fechaFmt, referencia: referencia.trim(), comision: comisionNum });
+            }}
+            style={{ padding: '10px 20px', background: pal.ink, color: pal.cream, border: 'none', borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: fechaInvalida || comisionInvalida ? 0.5 : 1 }}
+          >
+            Confirmar
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
 }
 
 /* ---------------------------------------------------------
@@ -1172,6 +1331,7 @@ function IndiceFila({ e, i, activo, onClick }) {
         transition: 'background-color 200ms ease',
       }}
       onMouseEnter={(el) => {
+        if (!hoverFino()) return;
         el.currentTarget.style.background = 'oklch(97% 0.015 65 / 0.4)';
       }}
       onMouseLeave={(el) => {
@@ -1201,26 +1361,35 @@ function IndiceFila({ e, i, activo, onClick }) {
   );
 }
 
-function PaginaEmpleado({ e, index, readOnly, periodoDias, onAjustar, onMarcarPagado, onNavigate }) {
-  const [horasExtra, setHorasExtra] = useState(String(e.horasExtra || ''));
-  const [bono, setBono] = useState(String(e.bono || ''));
-  const [deduccion, setDeduccion] = useState(String(e.deduccionPuntual || ''));
+function PaginaEmpleado({ e, index, readOnly, periodoDias, metodosPago, onAjustar, onMarcarPagado, onAlternarConciliacion, onNavigate }) {
+  // Estos campos son el PRÓXIMO movimiento a firmar, no una edición del
+  // total ya acumulado (los ajustes se suman entre sí — ver App.jsx
+  // `guardarAjuste`, auditoría F14). Por eso arrancan vacíos en vez de
+  // precargar `e.horasExtra`/`e.bono`/`e.deduccionPuntual`: precargar el
+  // total invitaba a "corregirlo", y esa corrección se sumaba en vez de
+  // reemplazarlo, duplicando el monto.
+  const [horasExtra, setHorasExtra] = useState('');
+  const [bono, setBono] = useState('');
+  const [deduccion, setDeduccion] = useState('');
+  const [pagando, setPagando] = useState(false);
 
+  // Al cambiar de persona (o justo después de firmar, cuando el total ya
+  // acumulado cambia) se limpia el formulario para el siguiente movimiento.
   useEffect(() => {
-    setHorasExtra(String(e.horasExtra || ''));
-    setBono(String(e.bono || ''));
-    setDeduccion(String(e.deduccionPuntual || ''));
+    setHorasExtra('');
+    setBono('');
+    setDeduccion('');
   }, [e.id, e.horasExtra, e.bono, e.deduccionPuntual]);
 
   function aplicar() {
     onAjustar(e.id, { horasExtra: Number(horasExtra) || 0, bono: Number(bono) || 0, deduccion: Number(deduccion) || 0 });
   }
 
-  const valorHora = e.salario / 240;
-  const montoHorasExtra = valorHora * 1.5 * (e.horasExtra || 0);
+  const valorHora = e.valorHora || 0;
+  const montoHorasExtra = e.montoHorasExtra || 0;
 
   const movimientos = [];
-  if (e.horasExtra > 0) movimientos.push({ tipo: 'Horas extras', signo: 1, monto: montoHorasExtra, desc: `${e.horasExtra}h extra a 1.5× esta quincena.` });
+  if (e.horasExtra > 0) movimientos.push({ tipo: 'Horas extras', signo: 1, monto: montoHorasExtra, desc: `${e.horasExtra}h extra a ${e.factorHoraExtra}× esta quincena.` });
   if (e.bono > 0) movimientos.push({ tipo: 'Bono', signo: 1, monto: e.bono, desc: 'Bono puntual de la quincena.' });
   if (e.deduccionPuntual > 0) movimientos.push({ tipo: 'Deducción', signo: -1, monto: e.deduccionPuntual, desc: 'Deducción puntual de la quincena.' });
 
@@ -1343,6 +1512,7 @@ function PaginaEmpleado({ e, index, readOnly, periodoDias, onAjustar, onMarcarPa
                 cursor: 'default',
               }}
               onMouseEnter={(el) => {
+                if (!hoverFino()) return;
                 el.currentTarget.style.background = 'oklch(96% 0.01 65)';
                 el.currentTarget.style.transform = 'translateX(4px)';
               }}
@@ -1428,6 +1598,7 @@ function PaginaEmpleado({ e, index, readOnly, periodoDias, onAjustar, onMarcarPa
               transition: 'all 200ms ease',
             }}
             onMouseEnter={(el) => {
+              if (!hoverFino()) return;
               el.currentTarget.style.transform = 'translateY(-2px)';
               el.currentTarget.style.boxShadow = '0 4px 12px -4px oklch(0% 0 0 / 0.06)';
               el.currentTarget.style.borderColor = pal.gold;
@@ -1458,7 +1629,7 @@ function PaginaEmpleado({ e, index, readOnly, periodoDias, onAjustar, onMarcarPa
           <div style={{ marginTop: 12, padding: '16px 18px', border: `1px dashed ${pal.line}`, borderRadius: 16 }}>
             <div style={{ ...mono, fontSize: 9, marginBottom: 10 }}>Ajustar esta quincena</div>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              <MiniNumberField label="Horas extra" help="Se pagan a 1.5×" value={horasExtra} onChange={setHorasExtra} />
+              <MiniNumberField label="Horas extra" help={`Se pagan a ${e.factorHoraExtra}×`} value={horasExtra} onChange={setHorasExtra} />
               <MiniNumberField label="Bono (₡)" value={bono} onChange={setBono} />
               <MiniNumberField label="Deducción (₡)" help="Adelantos, préstamos…" value={deduccion} onChange={setDeduccion} />
             </div>
@@ -1479,6 +1650,7 @@ function PaginaEmpleado({ e, index, readOnly, periodoDias, onAjustar, onMarcarPa
                 boxShadow: '0 2px 8px oklch(20% 0.02 30 / 0.1)',
               }}
               onMouseEnter={(e) => {
+                if (!hoverFino()) return;
                 e.currentTarget.style.transform = 'translateY(-1.5px)';
                 e.currentTarget.style.boxShadow = '0 6px 14px oklch(20% 0.02 30 / 0.2)';
               }}
@@ -1545,7 +1717,7 @@ function PaginaEmpleado({ e, index, readOnly, periodoDias, onAjustar, onMarcarPa
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 160 }}>
               <button
                 type="button"
-                onClick={() => onMarcarPagado(e.id, { metodo: e.banco, fecha: fechaCorta(HOY) })}
+                onClick={() => setPagando(true)}
                 style={{
                   padding: '12px 20px',
                   background: pal.ink,
@@ -1559,6 +1731,7 @@ function PaginaEmpleado({ e, index, readOnly, periodoDias, onAjustar, onMarcarPa
                   boxShadow: '0 2px 8px oklch(20% 0.02 30 / 0.12)',
                 }}
                 onMouseEnter={(el) => {
+                  if (!hoverFino()) return;
                   el.currentTarget.style.transform = 'translateY(-1.5px)';
                   el.currentTarget.style.boxShadow = '0 6px 14px oklch(20% 0.02 30 / 0.2)';
                 }}
@@ -1585,20 +1758,60 @@ function PaginaEmpleado({ e, index, readOnly, periodoDias, onAjustar, onMarcarPa
                   cursor: 'pointer',
                   transition: 'opacity 180ms ease',
                 }}
-                onMouseEnter={(el) => { el.currentTarget.style.opacity = 0.75; }}
+                onMouseEnter={(el) => { if (hoverFino()) el.currentTarget.style.opacity = 0.75; }}
                 onMouseLeave={(el) => { el.currentTarget.style.opacity = 1; }}
               >
                 Ver ficha completa ↗
               </button>
             </div>
           )}
+          {/* Registro financiero manual (Fase 10): referencia y comisión que
+              se anotaron al marcar el pago, más el estado de conciliación —
+              distinto y posterior al hecho de "ya se pagó": conciliar es
+              confirmar a mano que el movimiento apareció en el estado de
+              cuenta, así que es una acción separada y reversible. */}
+          {!readOnly && e.pago === 'pagado' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 200 }}>
+              <div style={{ fontSize: 11.5, color: 'oklch(35% 0.06 30)', lineHeight: 1.7 }}>
+                <div>Ref. {e.referenciaPago && e.referenciaPago !== '—' ? e.referenciaPago : 'sin registrar'}</div>
+                <div>Comisión: {e.comisionPago ? money(e.comisionPago) : 'sin comisión registrada'}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onAlternarConciliacion(e.id)}
+                style={{
+                  padding: '10px 16px',
+                  background: e.conciliado ? 'oklch(94% 0.06 145)' : pal.surface,
+                  color: e.conciliado ? 'oklch(38% 0.11 145)' : pal.ink,
+                  border: `1px solid ${e.conciliado ? pal.sage : pal.line}`,
+                  borderRadius: 12,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {e.conciliado ? `Conciliado ✓ · ${e.conciliadoFecha}` : 'Marcar como conciliado'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
+
+      <PagoModal
+        open={pagando}
+        metodos={metodosPago}
+        sugerido={sugerirMetodoPago(e.banco, metodosPago)}
+        onClose={() => setPagando(false)}
+        onConfirmar={(datos) => {
+          onMarcarPagado(e.id, datos);
+          setPagando(false);
+        }}
+      />
     </div>
   );
 }
 
-function TallerSection({ emps, totales, readOnly, periodoDias, onAjustar, onMarcarPagado, onNavigate }) {
+function TallerSection({ emps, totales, readOnly, periodoDias, metodosPago, busqueda, onAjustar, onMarcarPagado, onAlternarConciliacion, onNavigate }) {
   const [filtro, setFiltro] = useState('todos');
   const [selectedId, setSelectedId] = useState(() => (emps.find((e) => e.pago !== 'pagado') || emps[0])?.id);
 
@@ -1609,7 +1822,13 @@ function TallerSection({ emps, totales, readOnly, periodoDias, onAjustar, onMarc
 
   const porRevisar = emps.filter((e) => e.pago !== 'pagado').length;
   const conAjustes = emps.filter((e) => e.tieneAjuste).length;
-  const visibles = emps.filter((e) => (filtro === 'revisar' ? e.pago !== 'pagado' : filtro === 'ajustes' ? e.tieneAjuste : true));
+  // El buscador del encabezado filtra este mismo índice (nombre, puesto o
+  // cédula). La persona abierta a la derecha no cambia sola por escribir:
+  // sigue siendo la seleccionada hasta que se elija otra del índice.
+  const q = (busqueda || '').trim().toLowerCase();
+  const visibles = emps
+    .filter((e) => (filtro === 'revisar' ? e.pago !== 'pagado' : filtro === 'ajustes' ? e.tieneAjuste : true))
+    .filter((e) => !q || e.nombre.toLowerCase().includes(q) || (e.puesto || '').toLowerCase().includes(q) || (e.cedula || '').toLowerCase().includes(q));
   const selected = emps.find((e) => e.id === selectedId) || emps[0];
   const selectedIndex = emps.findIndex((e) => e.id === selected?.id);
 
@@ -1644,7 +1863,7 @@ function TallerSection({ emps, totales, readOnly, periodoDias, onAjustar, onMarc
                 transition: 'all 200ms ease',
               }}
               onMouseEnter={(e) => {
-                if (filtro !== f.k) e.currentTarget.style.color = pal.ink;
+                if (hoverFino() && filtro !== f.k) e.currentTarget.style.color = pal.ink;
               }}
               onMouseLeave={(e) => {
                 if (filtro !== f.k) e.currentTarget.style.color = pal.muted;
@@ -1662,6 +1881,11 @@ function TallerSection({ emps, totales, readOnly, periodoDias, onAjustar, onMarc
           {visibles.map((e) => (
             <IndiceFila key={e.id} e={e} i={emps.indexOf(e)} activo={e.id === selected?.id} onClick={() => setSelectedId(e.id)} />
           ))}
+          {visibles.length === 0 && (
+            <div style={{ padding: '18px 4px', fontSize: 13, fontStyle: 'italic', color: pal.muted, ...serif }}>
+              Nadie coincide con ese filtro o esa búsqueda.
+            </div>
+          )}
         </div>
 
         {selected && (
@@ -1671,8 +1895,10 @@ function TallerSection({ emps, totales, readOnly, periodoDias, onAjustar, onMarc
             index={selectedIndex}
             readOnly={readOnly}
             periodoDias={periodoDias}
+            metodosPago={metodosPago}
             onAjustar={onAjustar}
             onMarcarPagado={onMarcarPagado}
+            onAlternarConciliacion={onAlternarConciliacion}
             onNavigate={onNavigate}
           />
         )}
@@ -1683,28 +1909,8 @@ function TallerSection({ emps, totales, readOnly, periodoDias, onAjustar, onMarc
 
 /* ---------------------------------------------------------
    § 04 — Rail de ajustes: timeline horizontal de los movimientos
-   reales de la quincena (horas extra / bono / deducción por
-   empleado). No hay fechas exactas por movimiento en los datos
-   — se muestran agrupados "de esta quincena", sin inventar horas
-   o firmas que no existen.
+   reales de la quincena (`buildMovimientosRail`, definido arriba).
    --------------------------------------------------------- */
-
-function buildMovimientosRail(emps) {
-  const list = [];
-  emps.forEach((e) => {
-    const valorHora = e.salario / 240;
-    if (e.horasExtra > 0) {
-      list.push({ id: `${e.id}-he`, e, tipo: 'Horas extras', signo: 1, monto: valorHora * 1.5 * e.horasExtra, desc: `${e.horasExtra}h extra a 1.5× esta quincena.` });
-    }
-    if (e.bono > 0) {
-      list.push({ id: `${e.id}-bono`, e, tipo: 'Bono', signo: 1, monto: e.bono, desc: 'Bono puntual de la quincena.' });
-    }
-    if (e.deduccionPuntual > 0) {
-      list.push({ id: `${e.id}-ded`, e, tipo: 'Deducción', signo: -1, monto: e.deduccionPuntual, desc: 'Deducción puntual de la quincena.' });
-    }
-  });
-  return list;
-}
 
 const RAIL_FILTROS = ['Todos', 'Horas extras', 'Bono', 'Deducción'];
 
@@ -1751,7 +1957,7 @@ function RailAjustes({ emps, readOnly, onIrAlTaller }) {
                 transition: 'all 200ms ease',
               }}
               onMouseEnter={(e) => {
-                if (filtro !== f) e.currentTarget.style.color = pal.ink;
+                if (hoverFino() && filtro !== f) e.currentTarget.style.color = pal.ink;
               }}
               onMouseLeave={(e) => {
                 if (filtro !== f) e.currentTarget.style.color = pal.muted;
@@ -1801,6 +2007,7 @@ function RailAjustes({ emps, readOnly, onIrAlTaller }) {
                     zIndex: 2,
                   }}
                   onMouseEnter={(el) => {
+                    if (!hoverFino()) return;
                     el.currentTarget.style.transform = 'translateY(-4px)';
                     el.currentTarget.style.boxShadow = '0 6px 18px -4px oklch(0% 0 0 / 0.08)';
                     el.currentTarget.style.borderColor = pal.gold;
@@ -1929,6 +2136,7 @@ function RailAjustes({ emps, readOnly, onIrAlTaller }) {
               zIndex: 2,
             }}
             onMouseEnter={(el) => {
+              if (!hoverFino()) return;
               el.currentTarget.style.transform = 'translateY(-1.5px)';
               el.currentTarget.style.boxShadow = '0 6px 14px oklch(20% 0.02 30 / 0.2)';
             }}
@@ -1955,20 +2163,28 @@ function PulsoAno({ periodos, totales, emps }) {
   const ultimas = (periodos || []).slice(0, 6);
   const ordenadas = [...ultimas].reverse(); // más antigua primero, como la referencia
 
-  const puntos = ordenadas.map((p) => ({
-    p,
-    costo: totales.totCosto * p.factor,
-    bruto: totales.sumBruto * p.factor,
-    car: totales.totCar * p.factor,
-    ded: totales.totDed * p.factor,
-  }));
+  // El período abierto se lee en vivo (`totales`, el que ya muestra esta
+  // pantalla); un cerrado real trae su propio snapshot congelado — nunca se
+  // recalcula con la planilla de hoy.
+  const puntos = ordenadas.map((p) => {
+    const t = p.estado === 'abierto' ? totales : p.snapshot ? p.snapshot.totales : { totCosto: 0, sumBruto: 0, totCar: 0, totDed: 0 };
+    // `bruto` acá es lo que alimenta la franja "Salarios" de la composición
+    // de abajo (card + gráfico apilado): usa el bruto YA MENOS deducciones
+    // (=neto) porque el bruto completo ya las incluye — apilarlo tal cual
+    // junto a Cargas y Deducciones duplicaba el monto de las deducciones y
+    // no dejaba espacio real para su franja (Neto + Deducciones + Cargas si
+    // suma exactamente el Costo Total; Bruto + Cargas + Deducciones no).
+    return { p, costo: t.totCosto, bruto: t.sumBruto - t.totDed, car: t.totCar, ded: t.totDed };
+  });
   const maxCosto = Math.max(...puntos.map((x) => x.costo), 1);
 
   const empCount = emps.length || 1;
   const costoPromedio = puntos.reduce((a, x) => a + x.costo, 0) / (puntos.length || 1) / empCount;
 
   const trendDeltaPct =
-    ultimas.length >= 2 && ultimas[1].factor !== 0 ? ((ultimas[0].factor - ultimas[1].factor) / ultimas[1].factor) * 100 : null;
+    puntos.length >= 2 && puntos[puntos.length - 2].costo !== 0
+      ? ((puntos[puntos.length - 1].costo - puntos[puntos.length - 2].costo) / puntos[puntos.length - 2].costo) * 100
+      : null;
 
   const ultimoCerrado = (periodos || []).find((p) => p.estado === 'cerrado');
   let diasDesdeCierre = null;
@@ -2328,6 +2544,7 @@ function CierrePeriodo({ periodo, periodoTipo, readOnly, totales, emps, onAbrirC
                     position: 'relative',
                   }}
                   onMouseEnter={(eBtn) => {
+                    if (!hoverFino()) return;
                     eBtn.currentTarget.style.transform = 'translateY(-2px)';
                     eBtn.currentTarget.style.boxShadow = '0 16px 36px -8px oklch(20% 0.02 30 / 0.5)';
                   }}
@@ -2404,6 +2621,15 @@ function CierrePeriodo({ periodo, periodoTipo, readOnly, totales, emps, onAbrirC
    Composición
    --------------------------------------------------------- */
 
+const PLANILLA_SECTIONS = [
+  { key: 'periodo', label: 'Período' },
+  { key: 'resumen', label: 'Resumen' },
+  { key: 'taller', label: 'Planilla' },
+  { key: 'deducciones', label: 'Deducciones' },
+  { key: 'pulso', label: 'Pulso' },
+  { key: 'cierre', label: 'Cierre' },
+];
+
 export default function Planilla({
   vista,
   periodoTipo,
@@ -2411,15 +2637,25 @@ export default function Planilla({
   periodoActivoId,
   atender,
   barras,
+  metodosPago,
+  notificaciones,
+  onNotifClick,
   onSeleccionarPeriodo,
   onAjustar,
   onMarcarPagado,
+  onAlternarConciliacion,
   onCerrarPeriodo,
   onVolverActivo,
   onNavigate,
 }) {
   const [confirmCerrar, setConfirmCerrar] = useState(false);
+  const [busqueda, setBusqueda] = useState('');
   const { emps, totales, periodo, readOnly } = vista;
+
+  const sectionRefs = useRef({});
+  const setSectionRef = (key) => (el) => {
+    sectionRefs.current[key] = el;
+  };
 
   const inicioDia = periodoTipo === 'mensual' ? 1 : periodo.mitad === 'b' ? 16 : 1;
   const finDia =
@@ -2435,6 +2671,8 @@ export default function Planilla({
 
   return (
     <div className="screen ed-home" style={{ fontFamily: "'Albert Sans', system-ui, sans-serif", color: pal.ink, background: pal.cream, minHeight: '100%' }}>
+      <ScrollRail sectionRefs={sectionRefs} sections={PLANILLA_SECTIONS} />
+
       <div style={{ maxWidth: 1440, margin: '0 auto', position: 'relative' }}>
         <Masthead
           periodos={periodos}
@@ -2443,47 +2681,66 @@ export default function Planilla({
           onSeleccionarPeriodo={onSeleccionarPeriodo}
           onNavigate={onNavigate}
           atender={atender}
+          busqueda={busqueda}
+          onBusquedaChange={setBusqueda}
+          notificaciones={notificaciones}
+          onNotifClick={onNotifClick}
         />
 
         <StatusBar emps={emps} readOnly={readOnly} />
 
-        <Seccion01Hero
-          periodo={periodo}
-          periodoTipo={periodoTipo}
-          readOnly={readOnly}
-          emps={emps}
-          atender={atender}
-          onExportar={() => descargarCsv(vista)}
-          onAbrirCerrar={() => setConfirmCerrar(true)}
-          onVolverActivo={onVolverActivo}
-          onIrAlEquipo={irAlTaller}
-        />
+        <div id="pl-sec-periodo" ref={setSectionRef('periodo')}>
+          <Seccion01Hero
+            periodo={periodo}
+            periodoTipo={periodoTipo}
+            readOnly={readOnly}
+            emps={emps}
+            atender={atender}
+            onExportar={() => exportarPlanillaCsv(vista)}
+            onAbrirCerrar={() => setConfirmCerrar(true)}
+            onVolverActivo={onVolverActivo}
+            onIrAlEquipo={irAlTaller}
+          />
+        </div>
 
-        <EstadoBand totales={totales} emps={emps} periodo={periodo} periodoTipo={periodoTipo} barras={barras} />
+        <div id="pl-sec-resumen" ref={setSectionRef('resumen')}>
+          <EstadoBand totales={totales} emps={emps} periodo={periodo} periodoTipo={periodoTipo} barras={barras} />
+        </div>
 
-        <TallerSection
-          emps={emps}
-          totales={totales}
-          readOnly={readOnly}
-          periodoDias={periodoDias}
-          onAjustar={onAjustar}
-          onMarcarPagado={onMarcarPagado}
-          onNavigate={onNavigate}
-        />
+        <div id="pl-sec-taller" ref={setSectionRef('taller')}>
+          <TallerSection
+            emps={emps}
+            totales={totales}
+            readOnly={readOnly}
+            periodoDias={periodoDias}
+            metodosPago={metodosPago}
+            busqueda={busqueda}
+            onAjustar={onAjustar}
+            onMarcarPagado={onMarcarPagado}
+            onAlternarConciliacion={onAlternarConciliacion}
+            onNavigate={onNavigate}
+          />
+        </div>
 
-        <RailAjustes emps={emps} readOnly={readOnly} onIrAlTaller={irAlTaller} />
+        <div id="pl-sec-deducciones" ref={setSectionRef('deducciones')}>
+          <RailAjustes emps={emps} readOnly={readOnly} onIrAlTaller={irAlTaller} />
+        </div>
 
-        <PulsoAno periodos={periodos} totales={totales} emps={emps} />
+        <div id="pl-sec-pulso" ref={setSectionRef('pulso')}>
+          <PulsoAno periodos={periodos} totales={totales} emps={emps} />
+        </div>
 
-        <CierrePeriodo
-          periodo={periodo}
-          periodoTipo={periodoTipo}
-          readOnly={readOnly}
-          totales={totales}
-          emps={emps}
-          onAbrirCerrar={() => setConfirmCerrar(true)}
-          onVolverActivo={onVolverActivo}
-        />
+        <div id="pl-sec-cierre" ref={setSectionRef('cierre')}>
+          <CierrePeriodo
+            periodo={periodo}
+            periodoTipo={periodoTipo}
+            readOnly={readOnly}
+            totales={totales}
+            emps={emps}
+            onAbrirCerrar={() => setConfirmCerrar(true)}
+            onVolverActivo={onVolverActivo}
+          />
+        </div>
 
         <footer
           style={{
@@ -2505,20 +2762,31 @@ export default function Planilla({
         </footer>
       </div>
 
-      {!readOnly && (
-        <ConfirmDialog
-          open={confirmCerrar}
-          onClose={() => setConfirmCerrar(false)}
-          onConfirm={() => {
-            onCerrarPeriodo();
-            setConfirmCerrar(false);
-          }}
-          title="Cerrar este período"
-          description={`Se cerrará "${periodo.titulo}" y pasará al historial como solo lectura. Se abrirá automáticamente el siguiente período ${periodoTipo === 'mensual' ? 'mensual' : 'quincenal'}. Esta acción no se puede deshacer.`}
-          confirmLabel="Cerrar período"
-          danger
-        />
-      )}
+      {!readOnly &&
+        (() => {
+          // Cerrar es irreversible y resetea el estado de pago de todos al
+          // abrir el siguiente período — advertir explícitamente si queda
+          // gente sin pagar, en vez de dejar cerrar en silencio (auditoría F18).
+          const sinPagar = emps.filter((e) => e.pago !== 'pagado').length;
+          const advertencia =
+            sinPagar > 0
+              ? `Todavía quedan ${sinPagar} de ${emps.length} personas sin pagar en esta quincena — al cerrar, esos pagos pendientes ya no se van a poder registrar acá. `
+              : '';
+          return (
+            <ConfirmDialog
+              open={confirmCerrar}
+              onClose={() => setConfirmCerrar(false)}
+              onConfirm={() => {
+                onCerrarPeriodo();
+                setConfirmCerrar(false);
+              }}
+              title={sinPagar > 0 ? `Cerrar con ${sinPagar} sin pagar` : 'Cerrar este período'}
+              description={`${advertencia}Se cerrará "${periodo.titulo}" y pasará al historial como solo lectura. Se abrirá automáticamente el siguiente período ${periodoTipo === 'mensual' ? 'mensual' : 'quincenal'}. Esta acción no se puede deshacer.`}
+              confirmLabel="Cerrar período"
+              danger
+            />
+          );
+        })()}
     </div>
   );
 }
